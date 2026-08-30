@@ -86,6 +86,8 @@ export function createTauriApi(): AppApi {
     getWorkMap: () => invoke("get_work_map"),
     putWorkMap: (payload) => invoke("put_work_map", { payload }),
     clearWorkMap: () => invoke("clear_work_map"),
+    createRestorePoint: () => invoke("create_restore_point"),
+    listRestorePoints: () => invoke("list_restore_points"),
   };
 }
 

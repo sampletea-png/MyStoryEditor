@@ -24,6 +24,7 @@ use setting::{
     CharacterDto, EventDto, LocationDto, RecycleItemDto, RestoreResultDto, SettingCatalogDto,
     SettingCategoryDto, SettingEntryDto, StorylineDto,
 };
+use backup::{RestoreKind, RestorePoint};
 use work::{
     CreateChapterOptions, OpenedWorkDto, OutlineDto, PutWorkMapPayload, SaveChapterPayload, WorkMapDto,
     WorkPackage, WorkSummary,
@@ -180,8 +181,22 @@ fn open_work(state: State<AppState>, id: String) -> Result<OpenedWorkDto, String
 
 #[tauri::command]
 fn close_work(state: State<AppState>) -> Result<(), String> {
-    *state.open.lock().expect("open work lock") = None;
+    let mut open = state.open.lock().expect("open work lock");
+    if let Some(work) = open.as_ref() {
+        work.create_restore_point(RestoreKind::Auto).map_err(String::from)?;
+    }
+    *open = None;
     Ok(())
+}
+
+#[tauri::command]
+fn create_restore_point(state: State<AppState>) -> Result<RestorePoint, String> {
+    with_open(&state, |work| work.create_restore_point(RestoreKind::Manual)).map_err(String::from)
+}
+
+#[tauri::command]
+fn list_restore_points(state: State<AppState>) -> Result<Vec<RestorePoint>, String> {
+    with_open(&state, |work| work.list_restore_points()).map_err(String::from)
 }
 
 #[tauri::command]
@@ -539,7 +554,9 @@ pub fn run() {
             delete_association,
             get_work_map,
             put_work_map,
-            clear_work_map
+            clear_work_map,
+            create_restore_point,
+            list_restore_points
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

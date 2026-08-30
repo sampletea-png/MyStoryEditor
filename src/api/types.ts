@@ -85,6 +85,15 @@ export type SearchResults = {
   settings: SettingHit[];
 };
 
+export type RestoreKind = "manual" | "auto" | "migration";
+
+export type RestorePoint = {
+  path: string;
+  folderName: string;
+  createdAt: string;
+  kind: RestoreKind;
+};
+
 export type AppApi = {
   getBootstrap: () => Promise<Bootstrap>;
   setLibraryPath: (path: string) => Promise<void>;
@@ -163,4 +172,6 @@ export type AppApi = {
   getWorkMap: () => Promise<WorkMapImage | null>;
   putWorkMap: (payload: { fileName: string; bytes: number[] }) => Promise<WorkMapImage>;
   clearWorkMap: () => Promise<void>;
+  createRestorePoint: () => Promise<RestorePoint>;
+  listRestorePoints: () => Promise<RestorePoint[]>;
 };

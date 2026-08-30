@@ -45,7 +45,7 @@ import {
 } from "../domain/workMap";
 import { EMPTY_DOCUMENT } from "../editor/schema";
 import { countDocumentWords, extractPlainText, type TipTapNode } from "../domain/wordCount";
-import type { AppApi, ChapterBody, OpenedWork, Session, WorkMapImage, WorkSummary } from "./types";
+import type { AppApi, ChapterBody, OpenedWork, RestoreKind, RestorePoint, Session, WorkMapImage, WorkSummary } from "./types";
 
 type StoredChapter = Chapter & {
   body: TipTapNode;
@@ -79,6 +79,7 @@ type StoredWork = {
   settings: Map<string, Soft<SettingEntry>>;
   associations: Soft<Association>[];
   workMap: WorkMapImage | null;
+  restorePoints: RestorePoint[];
 };
 
 function createId() {
@@ -175,6 +176,7 @@ function emptyWorkFields() {
     settings: new Map<string, Soft<SettingEntry>>(),
     associations: [] as Soft<Association>[],
     workMap: null as WorkMapImage | null,
+    restorePoints: [] as RestorePoint[],
   };
 }
 
@@ -231,6 +233,8 @@ function workFromSnapshot(snapshot: WorkArchiveSnapshot, folderName: string, lib
     storylines: new Map(snapshot.storylines.map((item) => [item.id, structuredClone(item)])),
     settings: new Map(snapshot.settings.map((item) => [item.id, structuredClone(item)])),
     associations: structuredClone(snapshot.associations),
+    workMap: null,
+    restorePoints: [],
   };
 }
 
@@ -240,6 +244,74 @@ function encodeArchive(snapshot: WorkArchiveSnapshot): Uint8Array {
 
 function decodeArchive(archive: Uint8Array): WorkArchiveSnapshot {
   return JSON.parse(new TextDecoder().decode(archive)) as WorkArchiveSnapshot;
+}
+
+function restorePointsDir(work: StoredWork): string {
+  const parent = work.summary.path.replace(/[/\\][^/\\]+$/, "");
+  return `${parent}/${work.summary.folderName}.恢复点`;
+}
+
+function restoreKindLabel(kind: RestoreKind): string {
+  switch (kind) {
+    case "manual":
+      return "手动";
+    case "auto":
+      return "自动";
+    case "migration":
+      return "迁移";
+  }
+}
+
+function nextRestoreFolderName(work: StoredWork, kind: RestoreKind): string {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-")
+    + "_"
+    + [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((part) => String(part).padStart(2, "0"))
+      .join("");
+  const base = `${stamp}-${restoreKindLabel(kind)}`;
+  const used = new Set(work.restorePoints.map((item) => item.folderName.toLowerCase()));
+  if (!used.has(base.toLowerCase())) {
+    return base;
+  }
+  let n = 2;
+  while (used.has(`${base}-${n}`.toLowerCase())) {
+    n += 1;
+  }
+  return `${base}-${n}`;
+}
+
+function todayStamp(): string {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function addRestorePoint(work: StoredWork, kind: RestoreKind): RestorePoint {
+  const folderName = nextRestoreFolderName(work, kind);
+  const point: RestorePoint = {
+    path: `${restorePointsDir(work)}/${folderName}`,
+    folderName,
+    createdAt: new Date().toISOString(),
+    kind,
+  };
+  work.restorePoints.push(point);
+  return point;
+}
+
+function ensureDailyRestorePoint(work: StoredWork): RestorePoint | null {
+  const today = todayStamp();
+  if (work.restorePoints.some((item) => item.folderName.startsWith(today))) {
+    return null;
+  }
+  return addRestorePoint(work, "auto");
 }
 
 function displayRecycleName(kind: RecycleKind, name: string): string {
@@ -467,6 +539,7 @@ function bindMemoryApi(shared: MemoryShared): AppApi {
       releaseLock();
       acquireLock(work.summary.path);
       openId = work.summary.id;
+      ensureDailyRestorePoint(work);
       return opened(work);
     },
     async renameWork(id, name) {
@@ -511,9 +584,16 @@ function bindMemoryApi(shared: MemoryShared): AppApi {
       }
       acquireLock(work.summary.path);
       openId = id;
+      ensureDailyRestorePoint(work);
       return opened(work);
     },
     async closeWork() {
+      if (openId) {
+        const work = works.get(openId);
+        if (work) {
+          addRestorePoint(work, "auto");
+        }
+      }
       releaseLock();
       openId = null;
     },
@@ -1172,6 +1252,12 @@ function bindMemoryApi(shared: MemoryShared): AppApi {
     },
     async clearWorkMap() {
       requireOpen().workMap = null;
+    },
+    async createRestorePoint() {
+      return addRestorePoint(requireOpen(), "manual");
+    },
+    async listRestorePoints() {
+      return requireOpen().restorePoints.map((item) => ({ ...item }));
     },
   };
 }

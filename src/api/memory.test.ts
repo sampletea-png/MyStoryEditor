@@ -314,3 +314,29 @@ describe("work map through AppApi", () => {
     );
   });
 });
+
+describe("restore points through AppApi", () => {
+  it("creates a restore-point folder beside the work package", async () => {
+    const api = createMemoryApi();
+    await api.setLibraryPath("文档/小说作品库");
+    const opened = await api.createWork("北境行纪");
+    const point = await api.createRestorePoint();
+    expect(point.path).toContain(`${opened.work.folderName}.恢复点`);
+    expect(point.path).not.toMatch(/北境行纪[/\\]北境行纪\.恢复点/);
+    expect(point.kind).toBe("manual");
+    const listed = await api.listRestorePoints();
+    expect(listed.some((item) => item.path === point.path)).toBe(true);
+  });
+
+  it("creates a restore point when the work is closed", async () => {
+    const api = createMemoryApi();
+    await api.setLibraryPath("文档/小说作品库");
+    const opened = await api.createWork("北境行纪");
+    await api.closeWork();
+    await api.openWork(opened.work.id);
+    const listed = await api.listRestorePoints();
+    expect(listed.some((item) => item.kind === "auto" && item.path.includes("北境行纪.恢复点"))).toBe(
+      true,
+    );
+  });
+});
