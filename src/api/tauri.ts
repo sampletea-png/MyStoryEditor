@@ -1,8 +1,51 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
-import type { ChapterStatus } from "../domain/outline";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import type { ChapterStatus, Outline } from "../domain/outline";
 import type { RecycleKind } from "../domain/setting";
+import type { ChapterDocument } from "../domain/exportBody";
+import { runBodyExport, type ExportFileHost } from "./exportFiles";
 import type { AppApi, ChapterBody, OpenedWork, WorkSummary } from "./types";
+
+type BodyExportSource = {
+  workName: string;
+  outline: Outline;
+  chapters: ChapterDocument[];
+};
+
+function tauriExportFiles(): ExportFileHost {
+  return {
+    async pickSavePath(suggestedName) {
+      const extension = suggestedName.includes(".")
+        ? suggestedName.slice(suggestedName.lastIndexOf(".") + 1)
+        : "txt";
+      const selected = await save({
+        defaultPath: suggestedName,
+        title: "导出正文",
+        filters: [{ name: exportFilterName(extension), extensions: [extension] }],
+      });
+      return typeof selected === "string" ? selected : null;
+    },
+    exists: (path) => invoke("export_path_exists", { path }),
+    confirmOverwrite: (path) =>
+      confirm(`「${path}」已存在，要覆盖吗？`, {
+        title: "导出正文",
+        kind: "warning",
+        okLabel: "覆盖",
+        cancelLabel: "取消",
+      }),
+    writeBytes: (path, bytes) => invoke("write_export_file", { path, bytes: Array.from(bytes) }),
+  };
+}
+
+function exportFilterName(extension: string): string {
+  if (extension === "md") {
+    return "Markdown";
+  }
+  if (extension === "docx") {
+    return "DOCX";
+  }
+  return "纯文本";
+}
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -78,6 +121,18 @@ export function createTauriApi(): AppApi {
     createAssociation: (payload) => invoke("create_association", { payload }),
     updateAssociationNote: (id, note) => invoke("update_association_note", { id, note }),
     deleteAssociation: (id) => invoke("delete_association", { id }),
+    async exportBody(request) {
+      const source = await invoke<BodyExportSource>("body_export_source");
+      return runBodyExport(
+        {
+          workName: source.workName,
+          outline: source.outline,
+          chapters: source.chapters,
+          request,
+        },
+        tauriExportFiles(),
+      );
+    },
   };
 }
 

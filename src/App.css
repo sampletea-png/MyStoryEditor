@@ -255,6 +255,43 @@ button.active {
   min-width: 280px;
 }
 
+.export-dialog {
+  min-width: 360px;
+  max-width: 480px;
+}
+
+.export-formats,
+.export-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+}
+
+.export-formats {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.export-tree {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid #d8cbb6;
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+}
+
+.export-volume {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.export-chapter {
+  padding-left: 1.1rem;
+}
+
 .setting-panel {
   display: flex;
   flex-direction: column;

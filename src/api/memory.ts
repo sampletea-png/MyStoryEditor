@@ -41,7 +41,12 @@ import {
 import { containsQuery, snippetAround } from "../domain/workSearch";
 import { EMPTY_DOCUMENT } from "../editor/schema";
 import { countDocumentWords, extractPlainText, type TipTapNode } from "../domain/wordCount";
+import { browserDownloadFiles, runBodyExport, type ExportFileHost } from "./exportFiles";
 import type { AppApi, ChapterBody, OpenedWork, Session, WorkSummary } from "./types";
+
+export type MemoryApiOptions = {
+  exportFiles?: ExportFileHost;
+};
 
 type StoredChapter = Chapter & {
   body: TipTapNode;
@@ -193,7 +198,7 @@ function displayRecycleName(kind: RecycleKind, name: string): string {
   }
 }
 
-export function createMemoryApi(): AppApi {
+export function createMemoryApi(options: MemoryApiOptions = {}): AppApi {
   let libraryPath: string | null = null;
   const defaultLibraryPath = "文档/小说作品库";
   const works = new Map<string, StoredWork>();
@@ -1016,6 +1021,23 @@ export function createMemoryApi(): AppApi {
         throw new Error("找不到这条关联");
       }
       item.deletedAt = nowTs();
+    },
+    async exportBody(request) {
+      const work = requireOpen();
+      const files = options.exportFiles ?? browserDownloadFiles();
+      const chapters = liveChapters(work).map((chapter) => ({
+        id: chapter.id,
+        body: structuredClone(chapter.body),
+      }));
+      return runBodyExport(
+        {
+          workName: work.summary.name,
+          outline: structuredClone(work.outline),
+          chapters,
+          request,
+        },
+        files,
+      );
     },
   };
 }

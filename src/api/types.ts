@@ -1,3 +1,5 @@
+import type { BodyExportFormat } from "../domain/exportBody";
+import type { BodyExportRequest, BodyExportResult } from "./exportFiles";
 import type { ChapterStatus, Outline } from "../domain/outline";
 import type { Association, LinkRef } from "../domain/association";
 import type {
@@ -152,4 +154,7 @@ export type AppApi = {
   }) => Promise<Association>;
   updateAssociationNote: (id: string, note: string) => Promise<void>;
   deleteAssociation: (id: string) => Promise<void>;
+  exportBody: (request: BodyExportRequest) => Promise<BodyExportResult>;
 };
+
+export type { BodyExportFormat, BodyExportRequest, BodyExportResult };

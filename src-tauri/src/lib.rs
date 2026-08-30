@@ -8,6 +8,7 @@ mod setting;
 mod work;
 
 use std::fs;
+use std::path::Path;
 use std::sync::Mutex;
 
 use error::{AppError, AppResult};
@@ -25,7 +26,8 @@ use setting::{
     SettingCategoryDto, SettingEntryDto, StorylineDto,
 };
 use work::{
-    CreateChapterOptions, OpenedWorkDto, OutlineDto, SaveChapterPayload, WorkPackage, WorkSummary,
+    BodyExportSourceDto, CreateChapterOptions, OpenedWorkDto, OutlineDto, SaveChapterPayload,
+    WorkPackage, WorkSummary,
 };
 
 pub struct AppState {
@@ -407,6 +409,21 @@ fn delete_association(state: State<AppState>, id: String) -> Result<(), String> 
     with_open(&state, |work| work.delete_association(&id)).map_err(String::from)
 }
 
+#[tauri::command]
+fn body_export_source(state: State<AppState>) -> Result<BodyExportSourceDto, String> {
+    with_open(&state, |work| work.body_export_source()).map_err(String::from)
+}
+
+#[tauri::command]
+fn export_path_exists(path: String) -> bool {
+    Path::new(&path).exists()
+}
+
+#[tauri::command]
+fn write_export_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    fs::write(path, bytes).map_err(|err| err.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -484,7 +501,10 @@ pub fn run() {
             list_associations,
             create_association,
             update_association_note,
-            delete_association
+            delete_association,
+            body_export_source,
+            export_path_exists,
+            write_export_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

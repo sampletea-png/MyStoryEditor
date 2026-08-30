@@ -107,6 +107,21 @@ pub struct SaveChapterPayload {
     pub scroll_top: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterDocumentDto {
+    pub id: String,
+    pub body: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BodyExportSourceDto {
+    pub work_name: String,
+    pub outline: OutlineDto,
+    pub chapters: Vec<ChapterDocumentDto>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChapterOptions {
@@ -438,6 +453,29 @@ impl WorkPackage {
             )?;
         }
         self.outline()
+    }
+
+    pub fn body_export_source(&self) -> AppResult<BodyExportSourceDto> {
+        let outline = self.outline()?;
+        let mut chapters = Vec::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, body_json FROM chapters WHERE deleted_at IS NULL")?;
+        let rows = stmt.query_map([], |row| {
+            let body: String = row.get(1)?;
+            Ok(ChapterDocumentDto {
+                id: row.get(0)?,
+                body: serde_json::from_str(&body).unwrap_or(Value::Null),
+            })
+        })?;
+        for row in rows {
+            chapters.push(row?);
+        }
+        Ok(BodyExportSourceDto {
+            work_name: self.manifest.name.clone(),
+            outline,
+            chapters,
+        })
     }
 
     pub fn set_chapter_status(&self, id: &str, status: &str) -> AppResult<()> {

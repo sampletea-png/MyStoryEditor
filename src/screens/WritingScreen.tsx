@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "../api/tauri";
-import type { AppApi, ChapterBody, OpenedWork } from "../api/types";
+import type { AppApi, BodyExportFormat, ChapterBody, OpenedWork } from "../api/types";
 import { createAutosaveSession, type SaveStatus } from "../domain/autosave";
 import {
   canCreateChapterAtRoot,
@@ -23,6 +23,11 @@ type Props = {
 };
 
 const STATUSES: ChapterStatus[] = ["初稿", "修订中", "定稿"];
+const EXPORT_FORMATS: { id: BodyExportFormat; label: string }[] = [
+  { id: "plain", label: "纯文本" },
+  { id: "markdown", label: "Markdown" },
+  { id: "docx", label: "DOCX" },
+];
 
 export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [workName, setWorkName] = useState(initial.work.name);
@@ -50,6 +55,9 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [panelFocus, setPanelFocus] = useState<PanelFocus | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<BodyExportFormat>("markdown");
+  const [exportChapterIds, setExportChapterIds] = useState<Set<string>>(new Set());
 
   const draftRef = useRef(draft);
   const titleRef = useRef(title);
@@ -221,6 +229,16 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           }}
         >
           改名
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setExportFormat("markdown");
+            setExportChapterIds(new Set(outline.chapters.map((item) => item.id)));
+            setExportOpen(true);
+          }}
+        >
+          导出正文
         </button>
         {initial.fts5 ? null : <span className="error">FTS5 不可用</span>}
       </header>
@@ -487,6 +505,42 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           }}
         />
       ) : null}
+      {exportOpen ? (
+        <ExportBodyDialog
+          outline={outline}
+          format={exportFormat}
+          chapterIds={exportChapterIds}
+          onFormatChange={setExportFormat}
+          onChapterIdsChange={setExportChapterIds}
+          onCancel={() => setExportOpen(false)}
+          onExport={async () => {
+            if (chapterRef.current && draftRef.current) {
+              await autosave.saveNow();
+              if (autosave.hasUnpersistedChanges()) {
+                setError("还有未落盘的内容，无法导出");
+                return;
+              }
+            }
+            const allSelected =
+              exportChapterIds.size === outline.chapters.length &&
+              outline.chapters.every((item) => exportChapterIds.has(item.id));
+            try {
+              const result = await api.exportBody({
+                format: exportFormat,
+                chapterIds: allSelected ? undefined : [...exportChapterIds],
+              });
+              if (result.status === "saved" || result.status === "cancelled") {
+                setExportOpen(false);
+                setError(null);
+              } else if (result.status === "overwrite-declined") {
+                setError("已取消覆盖，未写入文件");
+              }
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+        />
+      ) : null}
       {exitBlock ? (
         <div className="modal">
           <div className="dialog">
@@ -518,6 +572,129 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ExportBodyDialog({
+  outline,
+  format,
+  chapterIds,
+  onFormatChange,
+  onChapterIdsChange,
+  onCancel,
+  onExport,
+}: {
+  outline: Outline;
+  format: BodyExportFormat;
+  chapterIds: Set<string>;
+  onFormatChange: (format: BodyExportFormat) => void;
+  onChapterIdsChange: (ids: Set<string>) => void;
+  onCancel: () => void;
+  onExport: () => void;
+}) {
+  const toggleChapter = (id: string, checked: boolean) => {
+    const next = new Set(chapterIds);
+    if (checked) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    onChapterIdsChange(next);
+  };
+
+  const toggleVolume = (volumeId: string, checked: boolean) => {
+    const next = new Set(chapterIds);
+    for (const item of outline.chapters) {
+      if (item.volumeId === volumeId) {
+        if (checked) {
+          next.add(item.id);
+        } else {
+          next.delete(item.id);
+        }
+      }
+    }
+    onChapterIdsChange(next);
+  };
+
+  const volumeChecked = (volumeId: string) => {
+    const children = outline.chapters.filter((item) => item.volumeId === volumeId);
+    return children.length > 0 && children.every((item) => chapterIds.has(item.id));
+  };
+
+  return (
+    <div className="modal">
+      <div className="dialog export-dialog">
+        <p>导出正文</p>
+        <div className="export-formats">
+          {EXPORT_FORMATS.map((item) => (
+            <label key={item.id}>
+              <input
+                type="radio"
+                name="export-format"
+                checked={format === item.id}
+                onChange={() => onFormatChange(item.id)}
+              />
+              {item.label}
+            </label>
+          ))}
+        </div>
+        <div className="export-tree">
+          {outline.volumes.map((volume) => (
+            <div key={volume.id} className="export-volume">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={volumeChecked(volume.id)}
+                  onChange={(event) => toggleVolume(volume.id, event.target.checked)}
+                />
+                {displayVolumeTitle(volume.title)}
+              </label>
+              {outline.chapters
+                .filter((item) => item.volumeId === volume.id)
+                .sort((a, b) => a.sortOrder - b.sortOrder)
+                .map((item) => (
+                  <label key={item.id} className="export-chapter">
+                    <input
+                      type="checkbox"
+                      checked={chapterIds.has(item.id)}
+                      onChange={(event) => toggleChapter(item.id, event.target.checked)}
+                    />
+                    {displayChapterTitle(item.title)}
+                  </label>
+                ))}
+            </div>
+          ))}
+          {outline.volumes.length === 0
+            ? outline.chapters
+                .slice()
+                .sort((a, b) => a.sortOrder - b.sortOrder)
+                .map((item) => (
+                  <label key={item.id} className="export-chapter">
+                    <input
+                      type="checkbox"
+                      checked={chapterIds.has(item.id)}
+                      onChange={(event) => toggleChapter(item.id, event.target.checked)}
+                    />
+                    {displayChapterTitle(item.title)}
+                  </label>
+                ))
+            : null}
+        </div>
+        <div className="row">
+          <button
+            type="button"
+            className="primary"
+            disabled={outline.chapters.length > 0 && chapterIds.size === 0}
+            onClick={() => void onExport()}
+          >
+            导出
+          </button>
+          <button type="button" onClick={onCancel}>
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
