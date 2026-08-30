@@ -731,6 +731,8 @@ impl WorkPackage {
     pub fn clear_work_map(&self) -> AppResult<()> {
         self.remove_map_assets()?;
         self.conn.execute("DELETE FROM work_map", [])?;
+        self.conn
+            .execute("UPDATE locations SET mark_x = NULL, mark_y = NULL", [])?;
         Ok(())
     }
 
@@ -1156,6 +1158,7 @@ mod tests {
             summary: String::new(),
             description: serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}),
             parent_id: None,
+            mark: None,
         })
         .unwrap();
         work.delete_location(&city.id).unwrap();
@@ -1252,6 +1255,57 @@ mod tests {
     }
 
     #[test]
+    fn location_mark_persists_across_reopen() {
+        use crate::setting::LocationMarkDto;
+
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let mut north = work.create_location(None).unwrap();
+        north.name = "北境".into();
+        north.mark = Some(LocationMarkDto { x: 0.3, y: 0.2 });
+        work.save_location(&north).unwrap();
+        let mut city = work.create_location(None).unwrap();
+        city.name = "北城".into();
+        work.save_location(&city).unwrap();
+        let north_id = north.id.clone();
+        let city_id = city.id.clone();
+        let path = work.path.clone();
+        drop(work);
+        let reopened = WorkPackage::open(&path).unwrap();
+        let catalog = reopened.catalog().unwrap();
+        let north = catalog.locations.iter().find(|item| item.id == north_id).unwrap();
+        let mark = north.mark.as_ref().expect("北境 should keep its location mark");
+        assert_eq!(mark.x, 0.3);
+        assert_eq!(mark.y, 0.2);
+        let city = catalog.locations.iter().find(|item| item.id == city_id).unwrap();
+        assert!(city.mark.is_none());
+    }
+
+    #[test]
+    fn clearing_map_clears_location_marks() {
+        use crate::setting::LocationMarkDto;
+
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let mut location = work.create_location(None).unwrap();
+        location.name = "北境".into();
+        location.mark = Some(LocationMarkDto { x: 0.5, y: 0.5 });
+        work.save_location(&location).unwrap();
+        work.put_work_map("map.webp", &[1, 2, 3, 4]).unwrap();
+        work.clear_work_map().unwrap();
+        let kept = work
+            .catalog()
+            .unwrap()
+            .locations
+            .into_iter()
+            .find(|item| item.id == location.id)
+            .unwrap();
+        assert_eq!(kept.name, "北境");
+        assert!(kept.mark.is_none());
+        assert!(work.opened().unwrap().work_map.is_none());
+    }
+
+    #[test]
     fn v3_work_gains_empty_work_map_on_open() {
         let dir = tempdir().unwrap();
         let created = WorkPackage::create(dir.path(), "旧作").unwrap();
@@ -1268,7 +1322,47 @@ mod tests {
             .conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, crate::schema::USER_VERSION);
+    }
+
+    #[test]
+    fn v4_work_gains_location_mark_columns_on_open() {
+        use crate::schema::USER_VERSION;
+
+        let dir = tempdir().unwrap();
+        let created = WorkPackage::create(dir.path(), "旧作").unwrap();
+        let mut location = created.create_location(None).unwrap();
+        location.name = "北境".into();
+        created.save_location(&location).unwrap();
+        let location_id = location.id.clone();
+        let path = created.path.clone();
+        created
+            .conn
+            .pragma_update(None, "user_version", 4)
+            .unwrap();
+        created
+            .conn
+            .execute_batch(
+                "ALTER TABLE locations DROP COLUMN mark_x;
+                 ALTER TABLE locations DROP COLUMN mark_y;",
+            )
+            .unwrap();
+        drop(created);
+        let opened = WorkPackage::open(&path).unwrap();
+        let version: i32 = opened
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+        let kept = opened
+            .catalog()
+            .unwrap()
+            .locations
+            .into_iter()
+            .find(|item| item.id == location_id)
+            .unwrap();
+        assert_eq!(kept.name, "北境");
+        assert!(kept.mark.is_none());
     }
 
     #[test]

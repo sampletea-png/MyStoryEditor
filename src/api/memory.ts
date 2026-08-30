@@ -233,7 +233,9 @@ function workFromSnapshot(snapshot: WorkArchiveSnapshot, folderName: string, lib
     session: { ...snapshot.session },
     categories: structuredClone(snapshot.categories),
     characters: new Map(snapshot.characters.map((item) => [item.id, structuredClone(item)])),
-    locations: new Map(snapshot.locations.map((item) => [item.id, structuredClone(item)])),
+    locations: new Map(
+      snapshot.locations.map((item) => [item.id, { ...structuredClone(item), mark: item.mark ?? null }]),
+    ),
     events: new Map(snapshot.events.map((item) => [item.id, structuredClone(item)])),
     storylines: new Map(snapshot.storylines.map((item) => [item.id, structuredClone(item)])),
     settings: new Map(snapshot.settings.map((item) => [item.id, structuredClone(item)])),
@@ -809,6 +811,7 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
         summary: "",
         description: structuredClone(EMPTY_DOCUMENT),
         parentId: parentId ?? null,
+        mark: null,
         deletedAt: null,
       };
       work.locations.set(item.id, item);
@@ -1256,7 +1259,11 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       return { mimeType: work.workMap.mimeType, bytes: [...work.workMap.bytes] };
     },
     async clearWorkMap() {
-      requireOpen().workMap = null;
+      const work = requireOpen();
+      work.workMap = null;
+      for (const location of work.locations.values()) {
+        location.mark = null;
+      }
     },
     async createRestorePoint() {
       return addRestorePoint(requireOpen(), "manual");

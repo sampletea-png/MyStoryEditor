@@ -30,12 +30,21 @@ pub struct CharacterDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocationMarkDto {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocationDto {
     pub id: String,
     pub name: String,
     pub summary: String,
     pub description: Value,
     pub parent_id: Option<String>,
+    #[serde(default)]
+    pub mark: Option<LocationMarkDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,13 +173,15 @@ impl WorkPackage {
             return Err(AppError::Message("地点不能形成环".into()));
         }
         let changed = self.conn.execute(
-            "UPDATE locations SET name = ?1, summary = ?2, description_json = ?3, parent_id = ?4
-             WHERE id = ?5 AND deleted_at IS NULL",
+            "UPDATE locations SET name = ?1, summary = ?2, description_json = ?3, parent_id = ?4, mark_x = ?5, mark_y = ?6
+             WHERE id = ?7 AND deleted_at IS NULL",
             params![
                 payload.name,
                 payload.summary,
                 serde_json::to_string(&payload.description)?,
                 payload.parent_id,
+                payload.mark.as_ref().map(|mark| mark.x),
+                payload.mark.as_ref().map(|mark| mark.y),
                 payload.id
             ],
         )?;
@@ -573,7 +584,7 @@ impl WorkPackage {
 
     fn list_locations(&self) -> AppResult<Vec<LocationDto>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, summary, description_json, parent_id
+            "SELECT id, name, summary, description_json, parent_id, mark_x, mark_y
              FROM locations WHERE deleted_at IS NULL ORDER BY sort_order",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -583,6 +594,7 @@ impl WorkPackage {
                 summary: row.get(2)?,
                 description: parse_json(row.get(3)?),
                 parent_id: row.get(4)?,
+                mark: mark_from_cols(row.get(5)?, row.get(6)?),
             })
         })?;
         collect_rows(rows)
@@ -663,7 +675,7 @@ impl WorkPackage {
 
     fn load_location(&self, id: &str) -> AppResult<LocationDto> {
         Ok(self.conn.query_row(
-            "SELECT id, name, summary, description_json, parent_id FROM locations WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT id, name, summary, description_json, parent_id, mark_x, mark_y FROM locations WHERE id = ?1 AND deleted_at IS NULL",
             [id],
             |row| {
                 Ok(LocationDto {
@@ -672,6 +684,7 @@ impl WorkPackage {
                     summary: row.get(2)?,
                     description: parse_json(row.get(3)?),
                     parent_id: row.get(4)?,
+                    mark: mark_from_cols(row.get(5)?, row.get(6)?),
                 })
             },
         )?)
@@ -866,6 +879,13 @@ impl WorkPackage {
             }
         }
         restore_row(&self.conn, "locations", id)
+    }
+}
+
+fn mark_from_cols(x: Option<f64>, y: Option<f64>) -> Option<LocationMarkDto> {
+    match (x, y) {
+        (Some(x), Some(y)) => Some(LocationMarkDto { x, y }),
+        _ => None,
     }
 }
 
