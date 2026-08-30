@@ -171,6 +171,70 @@ function emptyWorkFields() {
   };
 }
 
+type WorkArchiveSnapshot = {
+  name: string;
+  outline: Outline;
+  chapters: StoredChapter[];
+  recycledVolumes: RecycledVolume[];
+  session: Session;
+  categories: SettingCategory[];
+  characters: Soft<Character>[];
+  locations: Soft<Location>[];
+  events: Soft<StoryEvent>[];
+  storylines: Soft<Storyline>[];
+  settings: Soft<SettingEntry>[];
+  associations: Soft<Association>[];
+};
+
+function snapshotWork(work: StoredWork): WorkArchiveSnapshot {
+  return {
+    name: work.summary.name,
+    outline: structuredClone(work.outline),
+    chapters: [...work.chapters.values()].map((chapter) => structuredClone(chapter)),
+    recycledVolumes: structuredClone(work.recycledVolumes),
+    session: { ...work.session },
+    categories: structuredClone(work.categories),
+    characters: [...work.characters.values()].map((item) => structuredClone(item)),
+    locations: [...work.locations.values()].map((item) => structuredClone(item)),
+    events: [...work.events.values()].map((item) => structuredClone(item)),
+    storylines: [...work.storylines.values()].map((item) => structuredClone(item)),
+    settings: [...work.settings.values()].map((item) => structuredClone(item)),
+    associations: structuredClone(work.associations),
+  };
+}
+
+function workFromSnapshot(snapshot: WorkArchiveSnapshot, folderName: string, library: string): StoredWork {
+  const chapters = new Map(snapshot.chapters.map((chapter) => [chapter.id, structuredClone(chapter)]));
+  return {
+    summary: {
+      id: createId(),
+      name: snapshot.name,
+      folderName,
+      path: `${library}/${folderName}`,
+      recycled: false,
+    },
+    outline: structuredClone(snapshot.outline),
+    chapters,
+    recycledVolumes: structuredClone(snapshot.recycledVolumes),
+    session: { ...snapshot.session },
+    categories: structuredClone(snapshot.categories),
+    characters: new Map(snapshot.characters.map((item) => [item.id, structuredClone(item)])),
+    locations: new Map(snapshot.locations.map((item) => [item.id, structuredClone(item)])),
+    events: new Map(snapshot.events.map((item) => [item.id, structuredClone(item)])),
+    storylines: new Map(snapshot.storylines.map((item) => [item.id, structuredClone(item)])),
+    settings: new Map(snapshot.settings.map((item) => [item.id, structuredClone(item)])),
+    associations: structuredClone(snapshot.associations),
+  };
+}
+
+function encodeArchive(snapshot: WorkArchiveSnapshot): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(snapshot));
+}
+
+function decodeArchive(archive: Uint8Array): WorkArchiveSnapshot {
+  return JSON.parse(new TextDecoder().decode(archive)) as WorkArchiveSnapshot;
+}
+
 function displayRecycleName(kind: RecycleKind, name: string): string {
   if (name.trim() !== "") {
     return name;
@@ -1067,6 +1131,24 @@ function bindMemoryApi(shared: MemoryShared): AppApi {
         throw new Error("找不到这条关联");
       }
       item.deletedAt = nowTs();
+    },
+    async exportWorkArchive(id) {
+      const work = works.get(id);
+      if (!work) {
+        throw new Error("找不到这部作品");
+      }
+      return encodeArchive(snapshotWork(work));
+    },
+    async importWorkArchive(archive) {
+      const snapshot = decodeArchive(archive);
+      const folderName = uniqueFolderName(
+        snapshot.name,
+        new Set([...works.values()].map((work) => work.summary.folderName.toLowerCase())),
+      );
+      const work = workFromSnapshot(snapshot, folderName, libraryPath ?? defaultLibraryPath);
+      works.set(work.summary.id, work);
+      openId = work.summary.id;
+      return opened(work);
     },
   };
 }
