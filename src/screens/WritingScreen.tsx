@@ -534,7 +534,9 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
         <WorkMapOverlay
           api={api}
           map={workMap}
+          catalog={catalog}
           onMapChange={setWorkMap}
+          onCatalogChange={setCatalog}
           onClose={() => setMapOpen(false)}
         />
       ) : null}

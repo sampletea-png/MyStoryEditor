@@ -14,12 +14,18 @@ export type Character = {
   background: TipTapNode;
 };
 
+export type LocationMark = {
+  x: number;
+  y: number;
+};
+
 export type Location = {
   id: string;
   name: string;
   summary: string;
   description: TipTapNode;
   parentId: string | null;
+  mark: LocationMark | null;
 };
 
 export type StoryEvent = {

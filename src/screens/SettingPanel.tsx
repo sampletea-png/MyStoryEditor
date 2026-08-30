@@ -94,6 +94,21 @@ export function SettingPanel({
 
   const catalogRef = useRef(catalog);
   catalogRef.current = catalog;
+  useEffect(() => {
+    setLocation((current) => {
+      if (!current) {
+        return current;
+      }
+      const fromCatalog = catalog.locations.find((item) => item.id === current.id);
+      if (!fromCatalog) {
+        return current;
+      }
+      if (current.mark?.x === fromCatalog.mark?.x && current.mark?.y === fromCatalog.mark?.y) {
+        return current;
+      }
+      return { ...current, mark: fromCatalog.mark };
+    });
+  }, [catalog]);
   const characterRef = useRef(character);
   const locationRef = useRef(location);
   const eventRef = useRef(event);

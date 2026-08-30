@@ -306,6 +306,38 @@ describe("work map through AppApi", () => {
     expect(catalog.locations.find((item) => item.id === north.id)?.name).toBe("北境");
   });
 
+  it("places a mark on an unmarked location and leaves others unmarked", async () => {
+    const api = createMemoryApi();
+    const opened = await api.createWork("北境行纪");
+    await api.putWorkMap({ fileName: "map.png", bytes: PNG_BYTES });
+    const north = await api.createLocation();
+    const city = await api.createLocation();
+    expect(north.mark).toBeNull();
+    expect(city.mark).toBeNull();
+    await api.saveLocation({ ...north, name: "北境", mark: { x: 0.3, y: 0.2 } });
+    const catalog = await api.loadCatalog();
+    expect(catalog.locations.find((item) => item.id === north.id)?.mark).toEqual({ x: 0.3, y: 0.2 });
+    expect(catalog.locations.find((item) => item.id === city.id)?.mark).toBeNull();
+    const reopened = await api.openWork(opened.work.id);
+    expect(reopened.catalog.locations.find((item) => item.id === north.id)?.mark).toEqual({
+      x: 0.3,
+      y: 0.2,
+    });
+  });
+
+  it("clears location marks with the work map and keeps locations in the tree", async () => {
+    const api = createMemoryApi();
+    await api.createWork("北境行纪");
+    const north = await api.createLocation();
+    await api.saveLocation({ ...north, name: "北境", mark: { x: 0.5, y: 0.5 } });
+    await api.putWorkMap({ fileName: "map.webp", bytes: [1, 2, 3, 4] });
+    await api.clearWorkMap();
+    expect(await api.getWorkMap()).toBeNull();
+    const kept = (await api.loadCatalog()).locations.find((item) => item.id === north.id);
+    expect(kept?.name).toBe("北境");
+    expect(kept?.mark).toBeNull();
+  });
+
   it("rejects a gif as the work map", async () => {
     const api = createMemoryApi();
     await api.createWork("北境行纪");

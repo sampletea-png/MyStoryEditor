@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-pub const USER_VERSION: i32 = 4;
+pub const USER_VERSION: i32 = 5;
 pub const DOCUMENT_SCHEMA_VERSION: i32 = 1;
 pub const EMPTY_DOCUMENT: &str = r#"{"type":"doc","content":[{"type":"paragraph"}]}"#;
 pub const UNCATEGORIZED_ID: &str = "uncategorized";
@@ -64,7 +64,9 @@ const V2_TABLES: &str = r#"
             parent_id TEXT,
             document_schema_version INTEGER NOT NULL DEFAULT 1,
             sort_order INTEGER NOT NULL,
-            deleted_at INTEGER
+            deleted_at INTEGER,
+            mark_x REAL,
+            mark_y REAL
         );
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
@@ -129,6 +131,7 @@ pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
     migrate_v2_setting_tables(conn)?;
     migrate_v3_associations(conn)?;
     migrate_v4_work_map(conn)?;
+    migrate_v5_location_marks(conn)?;
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
 }
@@ -156,6 +159,9 @@ pub fn ensure_schema(conn: &Connection) -> AppResult<bool> {
     if version < 4 {
         migrate_v4_work_map(conn)?;
     }
+    if version < 5 {
+        migrate_v5_location_marks(conn)?;
+    }
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
 }
@@ -173,6 +179,27 @@ fn migrate_v3_associations(conn: &Connection) -> AppResult<()> {
 fn migrate_v4_work_map(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(V4_TABLES)?;
     Ok(())
+}
+
+fn migrate_v5_location_marks(conn: &Connection) -> AppResult<()> {
+    if !column_exists(conn, "locations", "mark_x")? {
+        conn.execute("ALTER TABLE locations ADD COLUMN mark_x REAL", [])?;
+    }
+    if !column_exists(conn, "locations", "mark_y")? {
+        conn.execute("ALTER TABLE locations ADD COLUMN mark_y REAL", [])?;
+    }
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> AppResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn seed_preset_categories(conn: &Connection) -> AppResult<()> {
