@@ -31,8 +31,16 @@ import {
   type StoryEvent,
   type Storyline,
 } from "../domain/setting";
+import {
+  canonicalizePair,
+  findPair,
+  isLinkableKind,
+  isSelfLink,
+  type Association,
+} from "../domain/association";
+import { containsQuery, snippetAround } from "../domain/workSearch";
 import { EMPTY_DOCUMENT } from "../editor/schema";
-import { countDocumentWords, type TipTapNode } from "../domain/wordCount";
+import { countDocumentWords, extractPlainText, type TipTapNode } from "../domain/wordCount";
 import type { AppApi, ChapterBody, OpenedWork, Session, WorkSummary } from "./types";
 
 type StoredChapter = Chapter & {
@@ -65,6 +73,7 @@ type StoredWork = {
   events: Map<string, Soft<StoryEvent>>;
   storylines: Map<string, Soft<Storyline>>;
   settings: Map<string, Soft<SettingEntry>>;
+  associations: Soft<Association>[];
 };
 
 function createId() {
@@ -158,6 +167,7 @@ function emptyWorkFields() {
     events: new Map<string, Soft<StoryEvent>>(),
     storylines: new Map<string, Soft<Storyline>>(),
     settings: new Map<string, Soft<SettingEntry>>(),
+    associations: [] as Soft<Association>[],
   };
 }
 
@@ -913,5 +923,130 @@ export function createMemoryApi(): AppApi {
       }
       work.settings.delete(id);
     },
+    async searchWork(query) {
+      const work = requireOpen();
+      const needle = query.trim();
+      if (!needle) {
+        return { chapters: [], settings: [] };
+      }
+      const chapters = liveChapters(work)
+        .filter(
+          (chapter) =>
+            containsQuery(chapter.title, needle) || containsQuery(extractPlainText(chapter.body), needle),
+        )
+        .map((chapter) => ({
+          id: chapter.id,
+          title: chapter.title,
+          snippet: snippetAround(`${chapter.title}\n${extractPlainText(chapter.body)}`, needle),
+          query: needle,
+        }));
+      const settings = [
+        ...live(work.characters)
+          .filter(
+            (item) =>
+              containsQuery(item.name, needle) ||
+              containsQuery(item.summary, needle) ||
+              item.aliases.some((alias) => containsQuery(alias, needle)),
+          )
+          .map((item) => ({
+            kind: "character" as const,
+            id: item.id,
+            name: item.name,
+            snippet: snippetAround([item.summary, ...item.aliases].filter(Boolean).join("、"), needle),
+          })),
+        ...namedHits(live(work.locations), "location", needle),
+        ...namedHits(live(work.events), "event", needle),
+        ...namedHits(live(work.storylines), "storyline", needle),
+        ...namedHits(live(work.settings), "setting", needle),
+      ];
+      return { chapters, settings };
+    },
+    async listAssociations(kind, id) {
+      const work = requireOpen();
+      return work.associations
+        .filter((item) => item.deletedAt === null)
+        .filter(
+          (item) =>
+            (item.left.kind === kind && item.left.id === id) ||
+            (item.right.kind === kind && item.right.id === id),
+        )
+        .filter((item) => liveRef(work, item.left) && liveRef(work, item.right))
+        .map((item) => cloneItem({ id: item.id, left: item.left, right: item.right, note: item.note }));
+    },
+    async createAssociation(payload) {
+      const work = requireOpen();
+      if (isSelfLink(payload.left, payload.right)) {
+        throw new Error("不能与自身建立关联");
+      }
+      if (!isLinkableKind(payload.left.kind) || !isLinkableKind(payload.right.kind)) {
+        throw new Error("故事线不进入通用关联");
+      }
+      if (!liveRef(work, payload.left) || !liveRef(work, payload.right)) {
+        throw new Error("关联的两端必须都还在");
+      }
+      const [left, right] = canonicalizePair(payload.left, payload.right);
+      const existing = findPair(work.associations, left, right);
+      if (existing) {
+        existing.deletedAt = null;
+        existing.note = payload.note;
+        existing.left = left;
+        existing.right = right;
+        return cloneItem({ id: existing.id, left, right, note: payload.note });
+      }
+      const created: Soft<Association> = {
+        id: createId(),
+        left,
+        right,
+        note: payload.note,
+        deletedAt: null,
+      };
+      work.associations.push(created);
+      return cloneItem({ id: created.id, left, right, note: created.note });
+    },
+    async updateAssociationNote(id, note) {
+      const item = requireOpen().associations.find((entry) => entry.id === id && entry.deletedAt === null);
+      if (!item) {
+        throw new Error("找不到这条关联");
+      }
+      item.note = note;
+    },
+    async deleteAssociation(id) {
+      const item = requireOpen().associations.find((entry) => entry.id === id && entry.deletedAt === null);
+      if (!item) {
+        throw new Error("找不到这条关联");
+      }
+      item.deletedAt = nowTs();
+    },
   };
+}
+
+function namedHits(
+  items: { id: string; name: string; summary: string }[],
+  kind: "location" | "event" | "storyline" | "setting",
+  needle: string,
+) {
+  return items
+    .filter((item) => containsQuery(item.name, needle) || containsQuery(item.summary, needle))
+    .map((item) => ({
+      kind,
+      id: item.id,
+      name: item.name,
+      snippet: snippetAround(`${item.name}\n${item.summary}`, needle),
+    }));
+}
+
+function liveRef(
+  work: StoredWork,
+  ref: { kind: string; id: string },
+): boolean {
+  if (ref.kind === "chapter") {
+    return work.chapters.get(ref.id)?.deletedAt === null;
+  }
+  const maps: Record<string, Map<string, Soft<{ id: string }>>> = {
+    character: work.characters,
+    location: work.locations,
+    event: work.events,
+    setting: work.settings,
+  };
+  return maps[ref.kind]?.get(ref.id)?.deletedAt === null;
 }

@@ -1,6 +1,7 @@
 mod backup;
 mod error;
 mod library;
+mod link;
 mod prefs;
 mod schema;
 mod setting;
@@ -16,6 +17,9 @@ use library::{
 use prefs::{default_library_path, require_library_path, Prefs};
 use serde::Serialize;
 use tauri::{Manager, State};
+use link::{
+    AssociationDto, CreateAssociationPayload, SearchResultsDto,
+};
 use setting::{
     CharacterDto, EventDto, LocationDto, RecycleItemDto, RestoreResultDto, SettingCatalogDto,
     SettingCategoryDto, SettingEntryDto, StorylineDto,
@@ -371,6 +375,38 @@ fn permanently_delete_recycle_item(
     with_open(&state, |work| work.permanently_delete_recycle(&kind, &id)).map_err(String::from)
 }
 
+#[tauri::command]
+fn search_work(state: State<AppState>, query: String) -> Result<SearchResultsDto, String> {
+    with_open(&state, |work| work.search_work(&query)).map_err(String::from)
+}
+
+#[tauri::command]
+fn list_associations(
+    state: State<AppState>,
+    kind: String,
+    id: String,
+) -> Result<Vec<AssociationDto>, String> {
+    with_open(&state, |work| work.list_associations(&kind, &id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn create_association(
+    state: State<AppState>,
+    payload: CreateAssociationPayload,
+) -> Result<AssociationDto, String> {
+    with_open(&state, |work| work.create_association(&payload)).map_err(String::from)
+}
+
+#[tauri::command]
+fn update_association_note(state: State<AppState>, id: String, note: String) -> Result<(), String> {
+    with_open(&state, |work| work.update_association_note(&id, &note)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_association(state: State<AppState>, id: String) -> Result<(), String> {
+    with_open(&state, |work| work.delete_association(&id)).map_err(String::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -443,7 +479,12 @@ pub fn run() {
             delete_category,
             list_work_recycle,
             restore_recycle_item,
-            permanently_delete_recycle_item
+            permanently_delete_recycle_item,
+            search_work,
+            list_associations,
+            create_association,
+            update_association_note,
+            delete_association
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

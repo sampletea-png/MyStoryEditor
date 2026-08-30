@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-pub const USER_VERSION: i32 = 2;
+pub const USER_VERSION: i32 = 3;
 pub const DOCUMENT_SCHEMA_VERSION: i32 = 1;
 pub const EMPTY_DOCUMENT: &str = r#"{"type":"doc","content":[{"type":"paragraph"}]}"#;
 pub const UNCATEGORIZED_ID: &str = "uncategorized";
@@ -102,9 +102,24 @@ const V2_TABLES: &str = r#"
         );
         "#;
 
+const V3_TABLES: &str = r#"
+        CREATE TABLE IF NOT EXISTS associations (
+            id TEXT PRIMARY KEY,
+            left_kind TEXT NOT NULL,
+            left_id TEXT NOT NULL,
+            right_kind TEXT NOT NULL,
+            right_id TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            deleted_at INTEGER
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS associations_pair
+            ON associations(left_kind, left_id, right_kind, right_id);
+        "#;
+
 pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
     conn.execute_batch(V1_TABLES)?;
     migrate_v2_setting_tables(conn)?;
+    migrate_v3_associations(conn)?;
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
 }
@@ -116,14 +131,22 @@ pub fn ensure_schema(conn: &Connection) -> AppResult<bool> {
     }
     if version < 2 {
         migrate_v2_setting_tables(conn)?;
-        conn.pragma_update(None, "user_version", USER_VERSION)?;
     }
+    if version < 3 {
+        migrate_v3_associations(conn)?;
+    }
+    conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
 }
 
 fn migrate_v2_setting_tables(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(V2_TABLES)?;
     seed_preset_categories(conn)
+}
+
+fn migrate_v3_associations(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(V3_TABLES)?;
+    Ok(())
 }
 
 fn seed_preset_categories(conn: &Connection) -> AppResult<()> {

@@ -73,6 +73,11 @@ export function createTauriApi(): AppApi {
     restoreRecycleItem: (kind: RecycleKind, id) => invoke("restore_recycle_item", { kind, id }),
     permanentlyDeleteRecycleItem: (kind: RecycleKind, id) =>
       invoke("permanently_delete_recycle_item", { kind, id }),
+    searchWork: (query) => invoke("search_work", { query }),
+    listAssociations: (kind, id) => invoke("list_associations", { kind, id }),
+    createAssociation: (payload) => invoke("create_association", { payload }),
+    updateAssociationNote: (id, note) => invoke("update_association_note", { id, note }),
+    deleteAssociation: (id) => invoke("delete_association", { id }),
   };
 }
 

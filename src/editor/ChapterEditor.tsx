@@ -1,6 +1,7 @@
 import { EditorContent, useEditor } from "@tiptap/react";
 import { useEffect, useRef } from "react";
 import type { TipTapNode } from "../domain/wordCount";
+import { findTextRange } from "../domain/workSearch";
 import { writingExtensions } from "./extensions";
 
 type Props = {
@@ -9,6 +10,7 @@ type Props = {
   cursorFrom: number;
   cursorTo: number;
   scrollTop: number;
+  highlightQuery?: string | null;
   composing: boolean;
   onComposingChange: (composing: boolean) => void;
   onUpdate: (payload: {
@@ -26,6 +28,7 @@ export function ChapterEditor({
   cursorFrom,
   cursorTo,
   scrollTop,
+  highlightQuery,
   composing,
   onComposingChange,
   onUpdate,
@@ -78,17 +81,24 @@ export function ChapterEditor({
     }
     skipEmit.current = true;
     editor.commands.setContent(document, false);
-    const maxPos = editor.state.doc.content.size;
-    const from = Math.min(Math.max(cursorFrom, 1), maxPos);
-    const to = Math.min(Math.max(cursorTo, 1), maxPos);
-    editor.commands.setTextSelection({ from, to });
+    const found = highlightQuery ? findTextRange(document, highlightQuery) : null;
+    if (found) {
+      editor.commands.setTextSelection(found);
+    } else {
+      const maxPos = editor.state.doc.content.size;
+      const from = Math.min(Math.max(cursorFrom, 1), maxPos);
+      const to = Math.min(Math.max(cursorTo, 1), maxPos);
+      editor.commands.setTextSelection({ from, to });
+    }
     requestAnimationFrame(() => {
-      if (scrollRef.current) {
+      if (found) {
+        editor.commands.scrollIntoView();
+      } else if (scrollRef.current) {
         scrollRef.current.scrollTop = scrollTop;
       }
       skipEmit.current = false;
     });
-  }, [editor, chapterId]);
+  }, [editor, chapterId, highlightQuery]);
 
   useEffect(() => {
     const root = scrollRef.current;

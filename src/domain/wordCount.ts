@@ -1,4 +1,4 @@
-const WHITESPACE = /[ \t\n\r\u3000]/;
+const WHITESPACE = /[\t\n\r\u3000]/;
 
 export function countWords(text: string): number {
   let count = 0;

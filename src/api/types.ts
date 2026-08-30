@@ -1,4 +1,5 @@
 import type { ChapterStatus, Outline } from "../domain/outline";
+import type { Association, LinkRef } from "../domain/association";
 import type {
   Character,
   Location,
@@ -57,6 +58,25 @@ export type OpenedWork = {
 export type RestoreResult = {
   catalog: SettingCatalog;
   outline: Outline;
+};
+
+export type ChapterHit = {
+  id: string;
+  title: string;
+  snippet: string;
+  query: string;
+};
+
+export type SettingHit = {
+  kind: "character" | "location" | "event" | "storyline" | "setting";
+  id: string;
+  name: string;
+  snippet: string;
+};
+
+export type SearchResults = {
+  chapters: ChapterHit[];
+  settings: SettingHit[];
 };
 
 export type AppApi = {
@@ -123,4 +143,13 @@ export type AppApi = {
   listWorkRecycle: () => Promise<RecycleItem[]>;
   restoreRecycleItem: (kind: RecycleKind, id: string) => Promise<RestoreResult>;
   permanentlyDeleteRecycleItem: (kind: RecycleKind, id: string) => Promise<void>;
+  searchWork: (query: string) => Promise<SearchResults>;
+  listAssociations: (kind: LinkRef["kind"], id: string) => Promise<Association[]>;
+  createAssociation: (payload: {
+    left: LinkRef;
+    right: LinkRef;
+    note: string;
+  }) => Promise<Association>;
+  updateAssociationNote: (id: string, note: string) => Promise<void>;
+  deleteAssociation: (id: string) => Promise<void>;
 };

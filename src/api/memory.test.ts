@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { UNCATEGORIZED_ID } from "../domain/settingCategories";
 import { displaySettingName } from "../domain/settingNames";
+import { storylineAssociationRollup } from "../domain/association";
 import { createMemoryApi } from "./memory";
 
 describe("setting materials through AppApi", () => {
@@ -69,5 +70,112 @@ describe("setting materials through AppApi", () => {
     expect(catalog.locations.some((item) => item.id === city.id)).toBe(false);
     const recycle = await api.listWorkRecycle();
     expect(recycle.some((item) => item.id === city.id && item.kind === "location")).toBe(true);
+  });
+});
+
+describe("associations and search through AppApi", () => {
+  it("keeps one undirected link between a chapter and a character", async () => {
+    const api = createMemoryApi();
+    const opened = await api.createWork("北境行纪");
+    const chapterId = opened.chapter!.id;
+    const character = await api.createCharacter();
+    const first = await api.createAssociation({
+      left: { kind: "chapter", id: chapterId },
+      right: { kind: "character", id: character.id },
+      note: "同乡",
+    });
+    const second = await api.createAssociation({
+      left: { kind: "character", id: character.id },
+      right: { kind: "chapter", id: chapterId },
+      note: "同乡",
+    });
+    expect(second.id).toBe(first.id);
+    expect(await api.listAssociations("chapter", chapterId)).toHaveLength(1);
+    expect((await api.listAssociations("character", character.id))[0]?.id).toBe(first.id);
+  });
+
+  it("finds a two-character name, an alias, and a short chapter phrase", async () => {
+    const api = createMemoryApi();
+    const opened = await api.createWork("北境行纪");
+    const character = await api.createCharacter();
+    await api.saveCharacter({ ...character, name: "阿宁", aliases: ["宁儿"], summary: "守关人" });
+    await api.saveChapter({
+      id: opened.chapter!.id,
+      title: opened.chapter!.title,
+      body: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "雪停之后他才出关" }] }],
+      },
+      cursorFrom: 1,
+      cursorTo: 1,
+      scrollTop: 0,
+    });
+    expect((await api.searchWork("阿宁")).settings.some((item) => item.id === character.id)).toBe(true);
+    expect((await api.searchWork("宁儿")).settings.some((item) => item.id === character.id)).toBe(true);
+    expect((await api.searchWork("守关人")).settings.some((item) => item.id === character.id)).toBe(true);
+    expect((await api.searchWork("他才出关")).chapters.some((item) => item.id === opened.chapter!.id)).toBe(
+      true,
+    );
+  });
+
+  it("refuses to put a storyline into generic associations", async () => {
+    const api = createMemoryApi();
+    const opened = await api.createWork("北境行纪");
+    const line = await api.createStoryline();
+    await expect(
+      api.createAssociation({
+        left: { kind: "storyline" as "chapter", id: line.id },
+        right: { kind: "chapter", id: opened.chapter!.id },
+        note: "",
+      }),
+    ).rejects.toThrow("故事线不进入通用关联");
+  });
+
+  it("exposes event associations a storyline can roll up as chapter, character, and location", async () => {
+    const api = createMemoryApi();
+    const opened = await api.createWork("北境行纪");
+    const event = await api.createEvent();
+    const character = await api.createCharacter();
+    const location = await api.createLocation();
+    const line = await api.createStoryline();
+    await api.addEventToStoryline(line.id, event.id);
+    await api.createAssociation({
+      left: { kind: "event", id: event.id },
+      right: { kind: "chapter", id: opened.chapter!.id },
+      note: "",
+    });
+    await api.createAssociation({
+      left: { kind: "event", id: event.id },
+      right: { kind: "character", id: character.id },
+      note: "",
+    });
+    await api.createAssociation({
+      left: { kind: "event", id: event.id },
+      right: { kind: "location", id: location.id },
+      note: "",
+    });
+    const links = await api.listAssociations("event", event.id);
+    expect(storylineAssociationRollup([event.id], links)).toEqual([
+      { kind: "chapter", id: opened.chapter!.id },
+      { kind: "character", id: character.id },
+      { kind: "location", id: location.id },
+    ]);
+  });
+
+  it("counts 你好，世界 Hello as 11 after save", async () => {
+    const api = createMemoryApi();
+    const opened = await api.createWork("北境行纪");
+    const result = await api.saveChapter({
+      id: opened.chapter!.id,
+      title: opened.chapter!.title,
+      body: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "你好，世界 Hello" }] }],
+      },
+      cursorFrom: 1,
+      cursorTo: 1,
+      scrollTop: 0,
+    });
+    expect(result.wordCount).toBe(11);
   });
 });

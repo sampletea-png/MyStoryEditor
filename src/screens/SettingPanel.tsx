@@ -21,19 +21,35 @@ import {
   type StoryEvent,
   type Storyline,
 } from "../domain/setting";
-import type { Outline } from "../domain/outline";
+import { displayChapterTitle, type Outline } from "../domain/outline";
+import {
+  LINKABLE_LABEL,
+  storylineAssociationRollup,
+  type LinkRef,
+} from "../domain/association";
 import { FieldEditor } from "../editor/FieldEditor";
+import { AssociationSection } from "./AssociationSection";
 
-type Tab = SettingKind | "recycle";
+export type PanelTab = SettingKind | "recycle" | "links";
+
+export type PanelFocus = {
+  tab: PanelTab;
+  id?: string;
+  token: number;
+};
 
 type Props = {
   api: AppApi;
   catalog: SettingCatalog;
+  outline: Outline;
+  chapterId: string | null;
+  focus: PanelFocus | null;
   onCatalogChange: (catalog: SettingCatalog) => void;
   onOutlineChange: (outline: Outline) => void;
+  onOpenChapter: (id: string) => void;
 };
 
-const TABS: { id: Tab; label: string }[] = [
+const TABS: { id: PanelTab; label: string }[] = [
   { id: "character", label: "角色" },
   { id: "location", label: "地点" },
   { id: "event", label: "事件" },
@@ -52,8 +68,17 @@ const RECYCLE_KIND: Record<RecycleKind, string> = {
   setting: "设定条目",
 };
 
-export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }: Props) {
-  const [tab, setTab] = useState<Tab>("character");
+export function SettingPanel({
+  api,
+  catalog,
+  outline,
+  chapterId,
+  focus,
+  onCatalogChange,
+  onOutlineChange,
+  onOpenChapter,
+}: Props) {
+  const [tab, setTab] = useState<PanelTab>("links");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [eventFilter, setEventFilter] = useState<"all" | "unlinked">("all");
@@ -65,6 +90,7 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
   const [recycle, setRecycle] = useState<RecycleItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [categoryDraft, setCategoryDraft] = useState("");
+  const [chapterLinksOpen, setChapterLinksOpen] = useState(true);
 
   const catalogRef = useRef(catalog);
   catalogRef.current = catalog;
@@ -154,6 +180,45 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
   const storylines = catalog.storylines.filter((item) => matchesNameQuery(item.name, query));
   const settings = catalog.settings.filter((item) => matchesNameQuery(item.name, query));
 
+  const openMaterial = (nextCatalog: SettingCatalog, ref: { kind: PanelTab | LinkRef["kind"]; id: string }) => {
+    if (ref.kind === "chapter") {
+      onOpenChapter(ref.id);
+      return;
+    }
+    if (ref.kind === "links" || ref.kind === "recycle") {
+      setTab(ref.kind);
+      return;
+    }
+    setTab(ref.kind);
+    setSelectedId(ref.id);
+    setCharacter(nextCatalog.characters.find((item) => item.id === ref.id) ?? null);
+    setLocation(nextCatalog.locations.find((item) => item.id === ref.id) ?? null);
+    setEvent(nextCatalog.events.find((item) => item.id === ref.id) ?? null);
+    setStoryline(nextCatalog.storylines.find((item) => item.id === ref.id) ?? null);
+    setSetting(nextCatalog.settings.find((item) => item.id === ref.id) ?? null);
+  };
+
+  const handleOpenLink = async (ref: LinkRef) => {
+    const next = await api.loadCatalog();
+    onCatalogChange(next);
+    openMaterial(next, ref);
+  };
+
+  useEffect(() => {
+    if (!focus) {
+      return;
+    }
+    if (focus.tab === "links" || focus.tab === "recycle") {
+      setTab(focus.tab);
+      return;
+    }
+    if (focus.id) {
+      openMaterial(catalog, { kind: focus.tab, id: focus.id });
+    } else {
+      setTab(focus.tab);
+    }
+  }, [focus]);
+
   return (
     <aside className="side-panel setting-panel">
       <div className="setting-tabs">
@@ -180,7 +245,26 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
         ))}
       </div>
       {error ? <p className="error">{error}</p> : null}
-      {tab !== "recycle" ? (
+      <details
+        className="chapter-links"
+        open={chapterLinksOpen}
+        onToggle={(event) => setChapterLinksOpen(event.currentTarget.open)}
+      >
+        <summary>本章关联</summary>
+        {chapterId ? (
+          <AssociationSection
+            api={api}
+            from={{ kind: "chapter", id: chapterId }}
+            catalog={catalog}
+            outline={outline}
+            onOpen={(ref) => void handleOpenLink(ref)}
+            showHeading={false}
+          />
+        ) : (
+          <p className="muted">没有当前章节时，仍可在设定条目上建立关联。</p>
+        )}
+      </details>
+      {tab !== "recycle" && tab !== "links" ? (
         <div className="setting-list-head">
           <input
             value={query}
@@ -506,6 +590,15 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
           }}
         />
       ) : null}
+      {character && tab === "character" ? (
+        <AssociationSection
+          api={api}
+          from={{ kind: "character", id: character.id }}
+          catalog={catalog}
+          outline={outline}
+          onOpen={(ref) => void handleOpenLink(ref)}
+        />
+      ) : null}
 
       {location && tab === "location" ? (
         <LocationCard
@@ -536,6 +629,15 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
               setSelectedId(null);
             });
           }}
+        />
+      ) : null}
+      {location && tab === "location" ? (
+        <AssociationSection
+          api={api}
+          from={{ kind: "location", id: location.id }}
+          catalog={catalog}
+          outline={outline}
+          onOpen={(ref) => void handleOpenLink(ref)}
         />
       ) : null}
 
@@ -574,11 +676,22 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
           }}
         />
       ) : null}
+      {event && tab === "event" ? (
+        <AssociationSection
+          api={api}
+          from={{ kind: "event", id: event.id }}
+          catalog={catalog}
+          outline={outline}
+          onOpen={(ref) => void handleOpenLink(ref)}
+        />
+      ) : null}
 
       {storyline && tab === "storyline" ? (
         <StorylineCard
           storyline={storyline}
           events={catalog.events}
+          catalog={catalog}
+          outline={outline}
           setStoryline={(next) => {
             setStoryline(next);
             storylineRef.current = next;
@@ -591,6 +704,7 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
             patchCatalog(catalogRef.current, onCatalogChange, "storylines", next);
           }}
           api={api}
+          onOpen={(ref) => void handleOpenLink(ref)}
           onDelete={() => {
             if (!window.confirm(`删除「${displaySettingName("storyline", storyline.name)}」？收录的事件不会被删除。`)) {
               return;
@@ -641,6 +755,15 @@ export function SettingPanel({ api, catalog, onCatalogChange, onOutlineChange }:
               setSelectedId(null);
             });
           }}
+        />
+      ) : null}
+      {setting && tab === "setting" ? (
+        <AssociationSection
+          api={api}
+          from={{ kind: "setting", id: setting.id }}
+          catalog={catalog}
+          outline={outline}
+          onOpen={(ref) => void handleOpenLink(ref)}
         />
       ) : null}
     </aside>
@@ -875,22 +998,56 @@ function EventCard({
 function StorylineCard({
   storyline,
   events,
+  catalog,
+  outline,
   setStoryline,
   onMembership,
   api,
+  onOpen,
   onDelete,
 }: {
   storyline: Storyline;
   events: StoryEvent[];
+  catalog: SettingCatalog;
+  outline: Outline;
   setStoryline: (next: Storyline) => void;
   onMembership: (next: Storyline) => void | Promise<void>;
   api: AppApi;
+  onOpen: (ref: LinkRef) => void;
   onDelete: () => void;
 }) {
+  const [rollup, setRollup] = useState<LinkRef[]>([]);
   const recorded = storyline.eventIds
     .map((id) => events.find((item) => item.id === id))
     .filter((item): item is StoryEvent => Boolean(item));
   const available = events.filter((item) => !storyline.eventIds.includes(item.id));
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(storyline.eventIds.map((id) => api.listAssociations("event", id))).then((lists) => {
+      if (!cancelled) {
+        setRollup(storylineAssociationRollup(storyline.eventIds, lists.flat()));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, storyline.eventIds]);
+
+  const labelOf = (ref: LinkRef) => {
+    if (ref.kind === "chapter") {
+      const chapter = outline.chapters.find((item) => item.id === ref.id);
+      return displayChapterTitle(chapter?.title ?? "");
+    }
+    if (ref.kind === "character") {
+      return displaySettingName("character", catalog.characters.find((item) => item.id === ref.id)?.name ?? "");
+    }
+    if (ref.kind === "location") {
+      return displaySettingName("location", catalog.locations.find((item) => item.id === ref.id)?.name ?? "");
+    }
+    return "";
+  };
+
   return (
     <div className="setting-card">
       <label>
@@ -960,6 +1117,21 @@ function StorylineCard({
         </label>
       ) : (
         <p className="muted">没有可加入的事件。事件仍可独立存在。</p>
+      )}
+      <strong>收录事件上的关联</strong>
+      {rollup.length === 0 ? (
+        <p className="muted">收录的事件还没有章节、角色或地点关联。</p>
+      ) : (
+        rollup.map((ref) => (
+          <button
+            key={`${ref.kind}-${ref.id}`}
+            type="button"
+            className="tree-open"
+            onClick={() => onOpen(ref)}
+          >
+            {LINKABLE_LABEL[ref.kind]} · {labelOf(ref)}
+          </button>
+        ))
       )}
       <button type="button" onClick={onDelete}>
         删除故事线

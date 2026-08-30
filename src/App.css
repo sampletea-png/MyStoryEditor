@@ -215,6 +215,10 @@ button.active {
   min-height: 60vh;
 }
 
+.chapter-editor ::selection {
+  background: #f0d48a;
+}
+
 .chapter-editor p {
   text-indent: 2em;
   margin: 0 0 0.9em;
@@ -340,6 +344,72 @@ button.active {
 
 .editor-toolbar.compact {
   padding: 0.2rem 0.35rem;
+}
+
+.association-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #d8cbb6;
+}
+
+.chapter-links {
+  border: 1px solid #d8cbb6;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem 0.5rem;
+  background: #fff8ee;
+}
+
+.chapter-links summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.chapter-links .association-box {
+  border-top: 0;
+  padding-top: 0.35rem;
+}
+
+.association-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.command-palette {
+  min-width: min(520px, 92vw);
+  max-height: 80vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.command-palette input {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #c9b8a0;
+  border-radius: 4px;
+  background: #fffdf8;
+}
+
+.command-palette h3 {
+  margin: 0.4rem 0 0.2rem;
+  font-size: 0.9rem;
+}
+
+.command-palette .tree-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  margin: 0.15rem 0;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
 }
 
 .recycle-row {

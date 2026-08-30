@@ -2,13 +2,12 @@ import { describe, expect, it } from "vitest";
 import { countDocumentWords, countWords, extractPlainText } from "./wordCount";
 
 describe("countWords", () => {
-  it("counts 你好，世界 Hello without the space", () => {
-    // 你 好 ， 世 界 Hello = 10。规格验收句写 11，与「不含空格」规则不一致，以规则为准。
-    expect(countWords("你好，世界 Hello")).toBe(10);
+  it("counts 你好，世界 Hello as 11", () => {
+    expect(countWords("你好，世界 Hello")).toBe(11);
   });
 
-  it("ignores spaces, newlines, and tabs", () => {
-    expect(countWords("你\t好\n世 界")).toBe(4);
+  it("ignores newlines, tabs, and ideographic spaces", () => {
+    expect(countWords("你\t好\n世\u3000界")).toBe(4);
   });
 });
 
@@ -42,6 +41,6 @@ describe("countDocumentWords", () => {
         },
       ],
     };
-    expect(countDocumentWords(doc)).toBe(10);
+    expect(countDocumentWords(doc)).toBe(11);
   });
 });

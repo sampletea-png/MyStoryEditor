@@ -13,7 +13,8 @@ import {
 import type { SettingCatalog } from "../domain/setting";
 import { countDocumentWords, type TipTapNode } from "../domain/wordCount";
 import { ChapterEditor } from "../editor/ChapterEditor";
-import { SettingPanel } from "./SettingPanel";
+import { CommandPalette } from "./CommandPalette";
+import { SettingPanel, type PanelFocus } from "./SettingPanel";
 
 type Props = {
   api: AppApi;
@@ -46,6 +47,9 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [lastPersistedAt, setLastPersistedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<SettingCatalog>(initial.catalog);
+  const [panelFocus, setPanelFocus] = useState<PanelFocus | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [commandOpen, setCommandOpen] = useState(false);
 
   const draftRef = useRef(draft);
   const titleRef = useRef(title);
@@ -108,6 +112,10 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
         event.preventDefault();
         void autosave.saveNow();
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen((value) => !value);
+      }
     };
     window.addEventListener("keydown", onKey);
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -167,7 +175,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
     setSelectedVolumeId(nextOutline.chapters.find((item) => item.id === id)?.volumeId ?? null);
   };
 
-  const switchChapter = async (id: string) => {
+  const switchChapter = async (id: string, highlightQuery: string | null = null) => {
     if (autosave.hasUnpersistedChanges()) {
       await autosave.saveNow();
       if (autosave.hasUnpersistedChanges()) {
@@ -175,6 +183,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
         return;
       }
     }
+    setHighlight(highlightQuery);
     await openChapter(id);
   };
 
@@ -241,6 +250,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
                     setTitle(created.chapter.title);
                     setStatus(created.chapter.status);
                     setSelectedKind("chapter");
+                    setHighlight(null);
                   }}
                 >
                   新章节
@@ -407,6 +417,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
                 cursorFrom={chapter.cursorFrom}
                 cursorTo={chapter.cursorTo}
                 scrollTop={chapter.scrollTop}
+                highlightQuery={highlight}
                 composing={composing}
                 onComposingChange={setComposing}
                 onUpdate={(payload) => {
@@ -429,8 +440,12 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
         <SettingPanel
           api={api}
           catalog={catalog}
+          outline={outline}
+          chapterId={chapter?.id ?? null}
+          focus={panelFocus}
           onCatalogChange={setCatalog}
           onOutlineChange={setOutline}
+          onOpenChapter={(id) => void switchChapter(id)}
         />
       </div>
       <footer className="status-bar">
@@ -454,6 +469,24 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
         ) : null}
         {error ? <span className="error">{error}</span> : null}
       </footer>
+      {commandOpen ? (
+        <CommandPalette
+          api={api}
+          onClose={() => setCommandOpen(false)}
+          onPickChapter={async (hit) => {
+            setCommandOpen(false);
+            await switchChapter(hit.id, hit.query);
+          }}
+          onPickSetting={(hit) => {
+            setCommandOpen(false);
+            setPanelFocus({
+              tab: hit.kind === "storyline" ? "storyline" : hit.kind,
+              id: hit.id,
+              token: Date.now(),
+            });
+          }}
+        />
+      ) : null}
       {exitBlock ? (
         <div className="modal">
           <div className="dialog">

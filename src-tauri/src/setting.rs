@@ -491,22 +491,34 @@ impl WorkPackage {
     pub fn permanently_delete_recycle(&self, kind: &str, id: &str) -> AppResult<()> {
         match kind {
             "volume" => {
-                self.conn
-                    .execute("DELETE FROM chapters WHERE volume_id = ?1 AND deleted_at IS NOT NULL", [id])?;
+                let mut stmt = self.conn.prepare(
+                    "SELECT id FROM chapters WHERE volume_id = ?1 AND deleted_at IS NOT NULL",
+                )?;
+                let chapter_ids: Vec<String> = stmt
+                    .query_map([id], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                for chapter_id in chapter_ids {
+                    self.drop_associations_for("chapter", &chapter_id)?;
+                    self.conn.execute("DELETE FROM chapters WHERE id = ?1", [&chapter_id])?;
+                }
                 self.conn.execute("DELETE FROM volumes WHERE id = ?1", [id])?;
             }
             "chapter" => {
+                self.drop_associations_for("chapter", id)?;
                 self.conn.execute("DELETE FROM chapters WHERE id = ?1", [id])?;
             }
             "character" => {
+                self.drop_associations_for("character", id)?;
                 self.conn.execute("DELETE FROM characters WHERE id = ?1", [id])?;
             }
             "location" => {
+                self.drop_associations_for("location", id)?;
                 self.conn
                     .execute("UPDATE locations SET parent_id = NULL WHERE parent_id = ?1", [id])?;
                 self.conn.execute("DELETE FROM locations WHERE id = ?1", [id])?;
             }
             "event" => {
+                self.drop_associations_for("event", id)?;
                 self.conn
                     .execute("DELETE FROM storyline_events WHERE event_id = ?1", [id])?;
                 self.conn.execute("DELETE FROM events WHERE id = ?1", [id])?;
@@ -517,6 +529,7 @@ impl WorkPackage {
                 self.conn.execute("DELETE FROM storylines WHERE id = ?1", [id])?;
             }
             "setting" => {
+                self.drop_associations_for("setting", id)?;
                 self.conn.execute("DELETE FROM setting_entries WHERE id = ?1", [id])?;
             }
             _ => return Err(AppError::Message("未知的回收站类型".into())),

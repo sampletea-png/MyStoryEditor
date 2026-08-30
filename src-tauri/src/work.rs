@@ -586,7 +586,7 @@ pub(crate) fn now_ts() -> i64 {
 
 pub fn count_words(text: &str) -> i64 {
     text.chars()
-        .filter(|ch| !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{3000}'))
+        .filter(|ch| !matches!(ch, '\t' | '\n' | '\r' | '\u{3000}'))
         .count() as i64
 }
 
@@ -623,8 +623,8 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn counts_hello_world_example_without_space() {
-        assert_eq!(count_words("你好，世界 Hello"), 10);
+    fn counts_hello_world_example_as_eleven() {
+        assert_eq!(count_words("你好，世界 Hello"), 11);
     }
 
     #[test]
