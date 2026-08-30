@@ -10,9 +10,14 @@ export function countWords(text: string): number {
   return count;
 }
 
+export type TipTapMark = {
+  type: string;
+};
+
 export type TipTapNode = {
   type?: string;
   text?: string;
+  marks?: TipTapMark[];
   content?: TipTapNode[];
 };
 

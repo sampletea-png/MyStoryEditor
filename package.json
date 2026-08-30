@@ -28,6 +28,7 @@
     "@tiptap/extension-text": "^2.11.7",
     "@tiptap/pm": "^2.11.7",
     "@tiptap/react": "^2.11.7",
+    "docx": "^9.7.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -37,6 +38,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^26.1.0",
+    "jszip": "^3.10.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^3.2.4"
