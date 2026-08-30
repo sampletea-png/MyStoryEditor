@@ -3,6 +3,7 @@ mod error;
 mod library;
 mod prefs;
 mod schema;
+mod setting;
 mod work;
 
 use std::fs;
@@ -15,6 +16,10 @@ use library::{
 use prefs::{default_library_path, require_library_path, Prefs};
 use serde::Serialize;
 use tauri::{Manager, State};
+use setting::{
+    CharacterDto, EventDto, LocationDto, RecycleItemDto, RestoreResultDto, SettingCatalogDto,
+    SettingCategoryDto, SettingEntryDto, StorylineDto,
+};
 use work::{
     CreateChapterOptions, OpenedWorkDto, OutlineDto, SaveChapterPayload, WorkPackage, WorkSummary,
 };
@@ -215,6 +220,157 @@ fn fail_next_save(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn load_catalog(state: State<AppState>) -> Result<SettingCatalogDto, String> {
+    with_open(&state, |work| work.catalog()).map_err(String::from)
+}
+
+#[tauri::command]
+fn create_character(state: State<AppState>) -> Result<CharacterDto, String> {
+    with_open(&state, |work| work.create_character()).map_err(String::from)
+}
+
+#[tauri::command]
+fn save_character(state: State<AppState>, payload: CharacterDto) -> Result<(), String> {
+    with_open(&state, |work| work.save_character(&payload)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_character(state: State<AppState>, id: String) -> Result<(), String> {
+    with_open(&state, |work| work.delete_character(&id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn create_location(state: State<AppState>, parent_id: Option<String>) -> Result<LocationDto, String> {
+    with_open(&state, |work| work.create_location(parent_id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn save_location(state: State<AppState>, payload: LocationDto) -> Result<SettingCatalogDto, String> {
+    with_open(&state, |work| work.save_location(&payload)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_location(state: State<AppState>, id: String) -> Result<SettingCatalogDto, String> {
+    with_open(&state, |work| work.delete_location(&id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn create_event(state: State<AppState>) -> Result<EventDto, String> {
+    with_open(&state, |work| work.create_event()).map_err(String::from)
+}
+
+#[tauri::command]
+fn save_event(state: State<AppState>, payload: EventDto) -> Result<(), String> {
+    with_open(&state, |work| work.save_event(&payload)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_event(state: State<AppState>, id: String) -> Result<(), String> {
+    with_open(&state, |work| work.delete_event(&id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn create_storyline(state: State<AppState>) -> Result<StorylineDto, String> {
+    with_open(&state, |work| work.create_storyline()).map_err(String::from)
+}
+
+#[tauri::command]
+fn save_storyline(state: State<AppState>, id: String, name: String, summary: String) -> Result<(), String> {
+    with_open(&state, |work| work.save_storyline(&id, &name, &summary)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_storyline(state: State<AppState>, id: String) -> Result<(), String> {
+    with_open(&state, |work| work.delete_storyline(&id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn add_event_to_storyline(
+    state: State<AppState>,
+    storyline_id: String,
+    event_id: String,
+) -> Result<StorylineDto, String> {
+    with_open(&state, |work| work.add_event_to_storyline(&storyline_id, &event_id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn remove_event_from_storyline(
+    state: State<AppState>,
+    storyline_id: String,
+    event_id: String,
+) -> Result<StorylineDto, String> {
+    with_open(&state, |work| work.remove_event_from_storyline(&storyline_id, &event_id))
+        .map_err(String::from)
+}
+
+#[tauri::command]
+fn move_storyline_event(
+    state: State<AppState>,
+    storyline_id: String,
+    event_id: String,
+    direction: String,
+) -> Result<StorylineDto, String> {
+    with_open(&state, |work| work.move_storyline_event(&storyline_id, &event_id, &direction))
+        .map_err(String::from)
+}
+
+#[tauri::command]
+fn create_setting_entry(
+    state: State<AppState>,
+    category_id: Option<String>,
+) -> Result<SettingEntryDto, String> {
+    with_open(&state, |work| work.create_setting_entry(category_id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn save_setting_entry(state: State<AppState>, payload: SettingEntryDto) -> Result<(), String> {
+    with_open(&state, |work| work.save_setting_entry(&payload)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_setting_entry(state: State<AppState>, id: String) -> Result<(), String> {
+    with_open(&state, |work| work.delete_setting_entry(&id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn create_category(state: State<AppState>, name: String) -> Result<SettingCategoryDto, String> {
+    with_open(&state, |work| work.create_category(&name)).map_err(String::from)
+}
+
+#[tauri::command]
+fn rename_category(state: State<AppState>, id: String, name: String) -> Result<(), String> {
+    with_open(&state, |work| work.rename_category(&id, &name)).map_err(String::from)
+}
+
+#[tauri::command]
+fn delete_category(state: State<AppState>, id: String) -> Result<SettingCatalogDto, String> {
+    with_open(&state, |work| work.delete_category(&id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn list_work_recycle(state: State<AppState>) -> Result<Vec<RecycleItemDto>, String> {
+    with_open(&state, |work| work.list_recycle()).map_err(String::from)
+}
+
+#[tauri::command]
+fn restore_recycle_item(
+    state: State<AppState>,
+    kind: String,
+    id: String,
+) -> Result<RestoreResultDto, String> {
+    with_open(&state, |work| work.restore_recycle(&kind, &id)).map_err(String::from)
+}
+
+#[tauri::command]
+fn permanently_delete_recycle_item(
+    state: State<AppState>,
+    kind: String,
+    id: String,
+) -> Result<(), String> {
+    with_open(&state, |work| work.permanently_delete_recycle(&kind, &id)).map_err(String::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -262,7 +418,32 @@ pub fn run() {
             set_chapter_status,
             save_chapter,
             load_chapter,
-            fail_next_save
+            fail_next_save,
+            load_catalog,
+            create_character,
+            save_character,
+            delete_character,
+            create_location,
+            save_location,
+            delete_location,
+            create_event,
+            save_event,
+            delete_event,
+            create_storyline,
+            save_storyline,
+            delete_storyline,
+            add_event_to_storyline,
+            remove_event_from_storyline,
+            move_storyline_event,
+            create_setting_entry,
+            save_setting_entry,
+            delete_setting_entry,
+            create_category,
+            rename_category,
+            delete_category,
+            list_work_recycle,
+            restore_recycle_item,
+            permanently_delete_recycle_item
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

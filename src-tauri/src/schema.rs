@@ -1,14 +1,13 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-pub const USER_VERSION: i32 = 1;
+pub const USER_VERSION: i32 = 2;
 pub const DOCUMENT_SCHEMA_VERSION: i32 = 1;
 pub const EMPTY_DOCUMENT: &str = r#"{"type":"doc","content":[{"type":"paragraph"}]}"#;
+pub const UNCATEGORIZED_ID: &str = "uncategorized";
 
-pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
-    conn.execute_batch(
-        r#"
+const V1_TABLES: &str = r#"
         PRAGMA foreign_keys = ON;
         PRAGMA journal_mode = WAL;
         CREATE TABLE IF NOT EXISTS volumes (
@@ -36,10 +35,112 @@ pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
-        "#,
-    )?;
+        "#;
+
+const V2_TABLES: &str = r#"
+        CREATE TABLE IF NOT EXISTS setting_categories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            is_system INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS characters (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            aliases_json TEXT NOT NULL DEFAULT '[]',
+            summary TEXT NOT NULL DEFAULT '',
+            appearance_json TEXT NOT NULL,
+            personality_json TEXT NOT NULL,
+            background_json TEXT NOT NULL,
+            document_schema_version INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL,
+            deleted_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS locations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            description_json TEXT NOT NULL,
+            parent_id TEXT,
+            document_schema_version INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL,
+            deleted_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            description_json TEXT NOT NULL,
+            story_time TEXT NOT NULL DEFAULT '',
+            document_schema_version INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL,
+            deleted_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS storylines (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL,
+            deleted_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS storyline_events (
+            storyline_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            PRIMARY KEY (storyline_id, event_id)
+        );
+        CREATE TABLE IF NOT EXISTS setting_entries (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            category_id TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            body_json TEXT NOT NULL,
+            document_schema_version INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL,
+            deleted_at INTEGER,
+            FOREIGN KEY(category_id) REFERENCES setting_categories(id)
+        );
+        "#;
+
+pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
+    conn.execute_batch(V1_TABLES)?;
+    migrate_v2_setting_tables(conn)?;
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
+}
+
+pub fn ensure_schema(conn: &Connection) -> AppResult<bool> {
+    let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version < 1 {
+        return initialize_work_db(conn);
+    }
+    if version < 2 {
+        migrate_v2_setting_tables(conn)?;
+        conn.pragma_update(None, "user_version", USER_VERSION)?;
+    }
+    ensure_fts5(conn)
+}
+
+fn migrate_v2_setting_tables(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(V2_TABLES)?;
+    seed_preset_categories(conn)
+}
+
+fn seed_preset_categories(conn: &Connection) -> AppResult<()> {
+    let presets = [
+        (UNCATEGORIZED_ID, "未分类", 0, 1),
+        ("preset-势力", "势力", 1, 0),
+        ("preset-制度", "制度", 2, 0),
+        ("preset-物种", "物种", 3, 0),
+        ("preset-规则", "规则", 4, 0),
+    ];
+    for (id, name, order, system) in presets {
+        conn.execute(
+            "INSERT OR IGNORE INTO setting_categories (id, name, sort_order, is_system) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, order, system],
+        )?;
+    }
+    Ok(())
 }
 
 pub fn ensure_fts5(conn: &Connection) -> AppResult<bool> {

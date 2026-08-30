@@ -10,8 +10,9 @@ use crate::backup::backup_connection;
 use crate::error::{AppError, AppResult};
 use crate::prefs::{folder_name_from_work_name, unique_folder_name};
 use crate::schema::{
-    fts5_available, initialize_work_db, DOCUMENT_SCHEMA_VERSION, EMPTY_DOCUMENT,
+    ensure_schema, fts5_available, initialize_work_db, DOCUMENT_SCHEMA_VERSION, EMPTY_DOCUMENT,
 };
+use crate::setting::SettingCatalogDto;
 
 pub const RECYCLE_DIR: &str = "作品库回收区";
 pub const RESTORE_SUFFIX: &str = ".恢复点";
@@ -92,6 +93,7 @@ pub struct OpenedWorkDto {
     pub chapter: Option<ChapterBodyDto>,
     pub work_word_count: i64,
     pub fts5: bool,
+    pub catalog: SettingCatalogDto,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,7 +117,7 @@ pub struct CreateChapterOptions {
 pub struct WorkPackage {
     pub path: PathBuf,
     pub manifest: WorkManifest,
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl WorkPackage {
@@ -160,6 +162,7 @@ impl WorkPackage {
         let manifest = read_manifest(path)?;
         let conn = Connection::open(path.join("work.sqlite"))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        ensure_schema(&conn)?;
         Ok(Self {
             path: path.to_path_buf(),
             manifest,
@@ -198,6 +201,7 @@ impl WorkPackage {
             chapter,
             work_word_count: self.work_word_count()?,
             fts5: fts5_available(&self.conn)?,
+            catalog: self.catalog()?,
         })
     }
 
@@ -576,7 +580,7 @@ fn now_iso() -> String {
     chrono::Local::now().to_rfc3339()
 }
 
-fn now_ts() -> i64 {
+pub(crate) fn now_ts() -> i64 {
     chrono::Local::now().timestamp()
 }
 

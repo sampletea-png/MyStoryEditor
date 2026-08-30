@@ -1,4 +1,15 @@
 import type { ChapterStatus, Outline } from "../domain/outline";
+import type {
+  Character,
+  Location,
+  RecycleItem,
+  RecycleKind,
+  SettingCatalog,
+  SettingCategory,
+  SettingEntry,
+  StoryEvent,
+  Storyline,
+} from "../domain/setting";
 import type { TipTapNode } from "../domain/wordCount";
 
 export type WorkSummary = {
@@ -40,6 +51,12 @@ export type OpenedWork = {
   chapter: ChapterBody | null;
   workWordCount: number;
   fts5: boolean;
+  catalog: SettingCatalog;
+};
+
+export type RestoreResult = {
+  catalog: SettingCatalog;
+  outline: Outline;
 };
 
 export type AppApi = {
@@ -77,4 +94,33 @@ export type AppApi = {
   }) => Promise<{ wordCount: number; workWordCount: number }>;
   loadChapter: (id: string) => Promise<ChapterBody>;
   failNextSave: () => Promise<void>;
+  loadCatalog: () => Promise<SettingCatalog>;
+  createCharacter: () => Promise<Character>;
+  saveCharacter: (payload: Character) => Promise<void>;
+  deleteCharacter: (id: string) => Promise<void>;
+  createLocation: (parentId?: string | null) => Promise<Location>;
+  saveLocation: (payload: Location) => Promise<SettingCatalog>;
+  deleteLocation: (id: string) => Promise<SettingCatalog>;
+  createEvent: () => Promise<StoryEvent>;
+  saveEvent: (payload: StoryEvent) => Promise<void>;
+  deleteEvent: (id: string) => Promise<void>;
+  createStoryline: () => Promise<Storyline>;
+  saveStoryline: (payload: { id: string; name: string; summary: string }) => Promise<void>;
+  deleteStoryline: (id: string) => Promise<void>;
+  addEventToStoryline: (storylineId: string, eventId: string) => Promise<Storyline>;
+  removeEventFromStoryline: (storylineId: string, eventId: string) => Promise<Storyline>;
+  moveStorylineEvent: (
+    storylineId: string,
+    eventId: string,
+    direction: "up" | "down",
+  ) => Promise<Storyline>;
+  createSettingEntry: (categoryId?: string | null) => Promise<SettingEntry>;
+  saveSettingEntry: (payload: SettingEntry) => Promise<void>;
+  deleteSettingEntry: (id: string) => Promise<void>;
+  createCategory: (name: string) => Promise<SettingCategory>;
+  renameCategory: (id: string, name: string) => Promise<void>;
+  deleteCategory: (id: string) => Promise<SettingCatalog>;
+  listWorkRecycle: () => Promise<RecycleItem[]>;
+  restoreRecycleItem: (kind: RecycleKind, id: string) => Promise<RestoreResult>;
+  permanentlyDeleteRecycleItem: (kind: RecycleKind, id: string) => Promise<void>;
 };

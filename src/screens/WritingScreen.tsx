@@ -10,8 +10,10 @@ import {
   type ChapterStatus,
   type Outline,
 } from "../domain/outline";
+import type { SettingCatalog } from "../domain/setting";
 import { countDocumentWords, type TipTapNode } from "../domain/wordCount";
 import { ChapterEditor } from "../editor/ChapterEditor";
+import { SettingPanel } from "./SettingPanel";
 
 type Props = {
   api: AppApi;
@@ -43,6 +45,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [exitBlock, setExitBlock] = useState<null | "library" | "window">(null);
   const [lastPersistedAt, setLastPersistedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<SettingCatalog>(initial.catalog);
 
   const draftRef = useRef(draft);
   const titleRef = useRef(title);
@@ -423,10 +426,12 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
             <div className="empty-chapter">这部作品暂时没有章节。不会自动补建「第一章」。</div>
           )}
         </section>
-        <aside className="side-panel">
-          <h2>本章关联</h2>
-          <p className="muted">阶段 1 只预留查阅栏，不建立关联。</p>
-        </aside>
+        <SettingPanel
+          api={api}
+          catalog={catalog}
+          onCatalogChange={setCatalog}
+          onOutlineChange={setOutline}
+        />
       </div>
       <footer className="status-bar">
         <span>本章 {chapterWords} 字</span>

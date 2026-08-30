@@ -11,19 +11,29 @@ import {
   type Volume,
 } from "../domain/outline";
 import { uniqueFolderName } from "../domain/folderName";
+import {
+  canDeleteCategory,
+  categoryNameTaken,
+  presetCategories,
+  reassignEntriesOnCategoryDelete,
+  UNCATEGORIZED_ID,
+  type SettingCategory,
+} from "../domain/settingCategories";
+import { promoteLocationChildren, wouldCreateLocationCycle } from "../domain/locationTree";
+import { includeEventOnce, excludeEvent, moveStorylineEvent as moveEventIds } from "../domain/storyline";
+import {
+  type Character,
+  type Location,
+  type RecycleItem,
+  type RecycleKind,
+  type SettingCatalog,
+  type SettingEntry,
+  type StoryEvent,
+  type Storyline,
+} from "../domain/setting";
+import { EMPTY_DOCUMENT } from "../editor/schema";
 import { countDocumentWords, type TipTapNode } from "../domain/wordCount";
-import type {
-  AppApi,
-  ChapterBody,
-  OpenedWork,
-  Session,
-  WorkSummary,
-} from "./types";
-
-const EMPTY_DOC: TipTapNode = {
-  type: "doc",
-  content: [{ type: "paragraph" }],
-};
+import type { AppApi, ChapterBody, OpenedWork, Session, WorkSummary } from "./types";
 
 type StoredChapter = Chapter & {
   body: TipTapNode;
@@ -32,17 +42,37 @@ type StoredChapter = Chapter & {
   cursorFrom: number;
   cursorTo: number;
   scrollTop: number;
+  deletedAt: number | null;
+};
+
+type Soft<T> = T & { deletedAt: number | null };
+
+type RecycledVolume = {
+  volume: Volume;
+  deletedAt: number;
+  chapterIds: string[];
 };
 
 type StoredWork = {
   summary: WorkSummary;
   outline: Outline;
   chapters: Map<string, StoredChapter>;
+  recycledVolumes: RecycledVolume[];
   session: Session;
+  categories: SettingCategory[];
+  characters: Map<string, Soft<Character>>;
+  locations: Map<string, Soft<Location>>;
+  events: Map<string, Soft<StoryEvent>>;
+  storylines: Map<string, Soft<Storyline>>;
+  settings: Map<string, Soft<SettingEntry>>;
 };
 
 function createId() {
   return crypto.randomUUID();
+}
+
+function nowTs() {
+  return Math.floor(Date.now() / 1000);
 }
 
 function emptyChapter(title: string, volumeId: string | null, sortOrder: number): StoredChapter {
@@ -52,12 +82,13 @@ function emptyChapter(title: string, volumeId: string | null, sortOrder: number)
     status: "初稿",
     volumeId,
     sortOrder,
-    body: structuredClone(EMPTY_DOC),
+    body: structuredClone(EMPTY_DOCUMENT),
     documentSchemaVersion: 1,
     wordCount: 0,
     cursorFrom: 1,
     cursorTo: 1,
     scrollTop: 0,
+    deletedAt: null,
   };
 }
 
@@ -75,22 +106,81 @@ function toBody(chapter: StoredChapter): ChapterBody {
   };
 }
 
+function liveChapters(work: StoredWork) {
+  return [...work.chapters.values()].filter((chapter) => chapter.deletedAt === null);
+}
+
 function workWordCount(work: StoredWork): number {
-  return [...work.chapters.values()].reduce((sum, chapter) => sum + chapter.wordCount, 0);
+  return liveChapters(work).reduce((sum, chapter) => sum + chapter.wordCount, 0);
+}
+
+function cloneItem<T>(item: T): T {
+  return structuredClone(item);
+}
+
+function catalogOf(work: StoredWork): SettingCatalog {
+  const live = <T,>(items: Map<string, Soft<T>>): T[] =>
+    [...items.values()]
+      .filter((item) => item.deletedAt === null)
+      .map(({ deletedAt: _deletedAt, ...item }) => cloneItem(item as T));
+  return {
+    categories: cloneItem(work.categories),
+    characters: live(work.characters),
+    locations: live(work.locations),
+    events: live(work.events),
+    storylines: live(work.storylines),
+    settings: live(work.settings),
+  };
 }
 
 function opened(work: StoredWork): OpenedWork {
   const chapter = work.session.chapterId
     ? work.chapters.get(work.session.chapterId)
-    : [...work.chapters.values()][0];
+    : liveChapters(work)[0];
+  const usable = chapter && chapter.deletedAt === null ? chapter : liveChapters(work)[0];
   return {
     work: { ...work.summary },
     outline: structuredClone(work.outline),
     session: { ...work.session },
-    chapter: chapter ? toBody(chapter) : null,
+    chapter: usable ? toBody(usable) : null,
     workWordCount: workWordCount(work),
     fts5: true,
+    catalog: catalogOf(work),
   };
+}
+
+function emptyWorkFields() {
+  return {
+    recycledVolumes: [] as RecycledVolume[],
+    categories: presetCategories(),
+    characters: new Map<string, Soft<Character>>(),
+    locations: new Map<string, Soft<Location>>(),
+    events: new Map<string, Soft<StoryEvent>>(),
+    storylines: new Map<string, Soft<Storyline>>(),
+    settings: new Map<string, Soft<SettingEntry>>(),
+  };
+}
+
+function displayRecycleName(kind: RecycleKind, name: string): string {
+  if (name.trim() !== "") {
+    return name;
+  }
+  switch (kind) {
+    case "volume":
+      return "未命名卷";
+    case "chapter":
+      return "未命名章节";
+    case "character":
+      return "未命名角色";
+    case "location":
+      return "未命名地点";
+    case "event":
+      return "未命名事件";
+    case "storyline":
+      return "未命名故事线";
+    case "setting":
+      return "未命名设定";
+  }
 }
 
 export function createMemoryApi(): AppApi {
@@ -123,11 +213,61 @@ export function createMemoryApi(): AppApi {
         stored.volumeId = chapter.volumeId;
       }
     }
-    for (const id of [...work.chapters.keys()]) {
+    for (const [id, stored] of work.chapters) {
+      if (stored.deletedAt !== null) {
+        continue;
+      }
       if (!outline.chapters.some((chapter) => chapter.id === id)) {
-        work.chapters.delete(id);
+        stored.deletedAt = nowTs();
       }
     }
+  };
+
+  const live = <T,>(items: Map<string, Soft<T>>) =>
+    [...items.values()].filter((item) => item.deletedAt === null);
+
+  const listRecycle = (work: StoredWork): RecycleItem[] => {
+    const items: RecycleItem[] = [];
+    for (const entry of work.recycledVolumes) {
+      items.push({
+        id: entry.volume.id,
+        kind: "volume",
+        name: displayRecycleName("volume", entry.volume.title),
+        deletedAt: entry.deletedAt,
+      });
+    }
+    for (const chapter of work.chapters.values()) {
+      if (chapter.deletedAt === null) {
+        continue;
+      }
+      if (work.recycledVolumes.some((entry) => entry.chapterIds.includes(chapter.id))) {
+        continue;
+      }
+      items.push({
+        id: chapter.id,
+        kind: "chapter",
+        name: displayRecycleName("chapter", chapter.title),
+        deletedAt: chapter.deletedAt,
+      });
+    }
+    const push = <T extends { id: string; name: string }>(kind: RecycleKind, records: Map<string, Soft<T>>) => {
+      for (const item of records.values()) {
+        if (item.deletedAt !== null) {
+          items.push({
+            id: item.id,
+            kind,
+            name: displayRecycleName(kind, item.name),
+            deletedAt: item.deletedAt,
+          });
+        }
+      }
+    };
+    push("character", work.characters);
+    push("location", work.locations);
+    push("event", work.events);
+    push("storyline", work.storylines);
+    push("setting", work.settings);
+    return items.sort((a, b) => b.deletedAt - a.deletedAt);
   };
 
   return {
@@ -197,6 +337,7 @@ export function createMemoryApi(): AppApi {
           cursorTo: 1,
           scrollTop: 0,
         },
+        ...emptyWorkFields(),
       };
       works.set(work.summary.id, work);
       openId = work.summary.id;
@@ -257,12 +398,16 @@ export function createMemoryApi(): AppApi {
     },
     async cancelVolumes() {
       const work = requireOpen();
+      const ts = nowTs();
+      for (const volume of work.outline.volumes) {
+        work.recycledVolumes.push({ volume, deletedAt: ts, chapterIds: [] });
+      }
       syncOutline(work, cancelVolumes(work.outline));
       return structuredClone(work.outline);
     },
     async createChapter(options) {
       const work = requireOpen();
-      const draft = emptyChapter("未命名章节", null, 0);
+      const draft = emptyChapter("", null, 0);
       const outline = insertChapter(
         work.outline,
         {
@@ -299,25 +444,36 @@ export function createMemoryApi(): AppApi {
     },
     async deleteVolume(id) {
       const work = requireOpen();
-      const remaining = work.outline.chapters.filter((chapter) => chapter.volumeId !== id);
-      work.outline = {
-        volumes: work.outline.volumes.filter((volume) => volume.id !== id),
-        chapters: remaining,
-      };
-      for (const [chapterId, chapter] of work.chapters) {
-        if (chapter.volumeId === id) {
-          work.chapters.delete(chapterId);
+      const volume = work.outline.volumes.find((item) => item.id === id);
+      const ts = nowTs();
+      const chapterIds = work.outline.chapters
+        .filter((chapter) => chapter.volumeId === id)
+        .map((chapter) => chapter.id);
+      if (volume) {
+        work.recycledVolumes.push({ volume, deletedAt: ts, chapterIds });
+      }
+      for (const chapterId of chapterIds) {
+        const stored = work.chapters.get(chapterId);
+        if (stored) {
+          stored.deletedAt = ts;
         }
       }
-      if (work.session.chapterId && !work.chapters.has(work.session.chapterId)) {
-        work.session.chapterId = [...work.chapters.keys()][0] ?? null;
+      work.outline = {
+        volumes: work.outline.volumes.filter((item) => item.id !== id),
+        chapters: work.outline.chapters.filter((chapter) => chapter.volumeId !== id),
+      };
+      if (work.session.chapterId && !work.outline.chapters.some((chapter) => chapter.id === work.session.chapterId)) {
+        work.session.chapterId = work.outline.chapters[0]?.id ?? null;
       }
       return structuredClone(work.outline);
     },
     async deleteChapter(id) {
       const work = requireOpen();
+      const stored = work.chapters.get(id);
+      if (stored) {
+        stored.deletedAt = nowTs();
+      }
       syncOutline(work, removeChapter(work.outline, id));
-      work.chapters.delete(id);
       if (work.session.chapterId === id) {
         work.session.chapterId = work.outline.chapters[0]?.id ?? null;
       }
@@ -360,7 +516,7 @@ export function createMemoryApi(): AppApi {
       }
       const work = requireOpen();
       const stored = work.chapters.get(payload.id);
-      if (!stored) {
+      if (!stored || stored.deletedAt !== null) {
         throw new Error("找不到这一章");
       }
       stored.title = payload.title;
@@ -383,7 +539,7 @@ export function createMemoryApi(): AppApi {
     async loadChapter(id) {
       const work = requireOpen();
       const stored = work.chapters.get(id);
-      if (!stored) {
+      if (!stored || stored.deletedAt !== null) {
         throw new Error("找不到这一章");
       }
       work.session.chapterId = id;
@@ -391,6 +547,371 @@ export function createMemoryApi(): AppApi {
     },
     async failNextSave() {
       failNext = true;
+    },
+    async loadCatalog() {
+      return catalogOf(requireOpen());
+    },
+    async createCharacter() {
+      const work = requireOpen();
+      const item: Soft<Character> = {
+        id: createId(),
+        name: "",
+        aliases: [],
+        summary: "",
+        appearance: structuredClone(EMPTY_DOCUMENT),
+        personality: structuredClone(EMPTY_DOCUMENT),
+        background: structuredClone(EMPTY_DOCUMENT),
+        deletedAt: null,
+      };
+      work.characters.set(item.id, item);
+      return cloneItem(item);
+    },
+    async saveCharacter(payload) {
+      const work = requireOpen();
+      const stored = work.characters.get(payload.id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到这个角色");
+      }
+      Object.assign(stored, cloneItem(payload), { deletedAt: null });
+    },
+    async deleteCharacter(id) {
+      const stored = requireOpen().characters.get(id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到要删除的条目");
+      }
+      stored.deletedAt = nowTs();
+    },
+    async createLocation(parentId) {
+      const work = requireOpen();
+      if (parentId && !live(work.locations).some((item) => item.id === parentId)) {
+        throw new Error("找不到上级地点");
+      }
+      const item: Soft<Location> = {
+        id: createId(),
+        name: "",
+        summary: "",
+        description: structuredClone(EMPTY_DOCUMENT),
+        parentId: parentId ?? null,
+        deletedAt: null,
+      };
+      work.locations.set(item.id, item);
+      return cloneItem(item);
+    },
+    async saveLocation(payload) {
+      const work = requireOpen();
+      const stored = work.locations.get(payload.id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到这个地点");
+      }
+      const nodes = live(work.locations).map((item) =>
+        item.id === payload.id ? { id: item.id, parentId: payload.parentId } : item,
+      );
+      if (wouldCreateLocationCycle(nodes, payload.id, payload.parentId)) {
+        throw new Error("地点不能形成环");
+      }
+      Object.assign(stored, cloneItem(payload), { deletedAt: null });
+      return catalogOf(work);
+    },
+    async deleteLocation(id) {
+      const work = requireOpen();
+      const stored = work.locations.get(id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到要删除的条目");
+      }
+      const liveLocations = live(work.locations);
+      const promoted = promoteLocationChildren(liveLocations, id);
+      for (const location of work.locations.values()) {
+        if (location.deletedAt !== null) {
+          continue;
+        }
+        const next = promoted.find((item) => item.id === location.id);
+        if (next) {
+          location.parentId = next.parentId;
+        }
+      }
+      stored.deletedAt = nowTs();
+      return catalogOf(work);
+    },
+    async createEvent() {
+      const work = requireOpen();
+      const item: Soft<StoryEvent> = {
+        id: createId(),
+        name: "",
+        summary: "",
+        description: structuredClone(EMPTY_DOCUMENT),
+        storyTime: "",
+        deletedAt: null,
+      };
+      work.events.set(item.id, item);
+      return cloneItem(item);
+    },
+    async saveEvent(payload) {
+      const work = requireOpen();
+      const stored = work.events.get(payload.id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到这个事件");
+      }
+      Object.assign(stored, cloneItem(payload), { deletedAt: null });
+    },
+    async deleteEvent(id) {
+      const stored = requireOpen().events.get(id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到要删除的条目");
+      }
+      stored.deletedAt = nowTs();
+    },
+    async createStoryline() {
+      const work = requireOpen();
+      const item: Soft<Storyline> = {
+        id: createId(),
+        name: "",
+        summary: "",
+        eventIds: [],
+        deletedAt: null,
+      };
+      work.storylines.set(item.id, item);
+      return cloneItem(item);
+    },
+    async saveStoryline(payload) {
+      const stored = requireOpen().storylines.get(payload.id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到这条故事线");
+      }
+      stored.name = payload.name;
+      stored.summary = payload.summary;
+    },
+    async deleteStoryline(id) {
+      const stored = requireOpen().storylines.get(id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到要删除的条目");
+      }
+      stored.deletedAt = nowTs();
+    },
+    async addEventToStoryline(storylineId, eventId) {
+      const work = requireOpen();
+      const line = work.storylines.get(storylineId);
+      const event = work.events.get(eventId);
+      if (!line || line.deletedAt !== null) {
+        throw new Error("找不到这条故事线");
+      }
+      if (!event || event.deletedAt !== null) {
+        throw new Error("找不到这个事件");
+      }
+      line.eventIds = includeEventOnce(line.eventIds, eventId);
+      return cloneItem(line);
+    },
+    async removeEventFromStoryline(storylineId, eventId) {
+      const line = requireOpen().storylines.get(storylineId);
+      if (!line || line.deletedAt !== null) {
+        throw new Error("找不到这条故事线");
+      }
+      line.eventIds = excludeEvent(line.eventIds, eventId);
+      return cloneItem(line);
+    },
+    async moveStorylineEvent(storylineId, eventId, direction) {
+      const line = requireOpen().storylines.get(storylineId);
+      if (!line || line.deletedAt !== null) {
+        throw new Error("找不到这条故事线");
+      }
+      line.eventIds = moveEventIds(line.eventIds, eventId, direction);
+      return cloneItem(line);
+    },
+    async createSettingEntry(categoryId) {
+      const work = requireOpen();
+      const category = categoryId ?? UNCATEGORIZED_ID;
+      if (!work.categories.some((item) => item.id === category)) {
+        throw new Error("找不到这个分类");
+      }
+      const item: Soft<SettingEntry> = {
+        id: createId(),
+        name: "",
+        categoryId: category,
+        summary: "",
+        body: structuredClone(EMPTY_DOCUMENT),
+        deletedAt: null,
+      };
+      work.settings.set(item.id, item);
+      return cloneItem(item);
+    },
+    async saveSettingEntry(payload) {
+      const work = requireOpen();
+      const stored = work.settings.get(payload.id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到这条设定");
+      }
+      if (!work.categories.some((item) => item.id === payload.categoryId)) {
+        throw new Error("找不到这个分类");
+      }
+      Object.assign(stored, cloneItem(payload), { deletedAt: null });
+    },
+    async deleteSettingEntry(id) {
+      const stored = requireOpen().settings.get(id);
+      if (!stored || stored.deletedAt !== null) {
+        throw new Error("找不到要删除的条目");
+      }
+      stored.deletedAt = nowTs();
+    },
+    async createCategory(name) {
+      const work = requireOpen();
+      const trimmed = name.trim();
+      if (!trimmed) {
+        throw new Error("分类名不能为空");
+      }
+      if (categoryNameTaken(work.categories, trimmed)) {
+        throw new Error("同一作品内分类名不可重复");
+      }
+      const category: SettingCategory = {
+        id: createId(),
+        name: trimmed,
+        sortOrder: work.categories.reduce((max, item) => Math.max(max, item.sortOrder), -1) + 1,
+        system: false,
+      };
+      work.categories.push(category);
+      return { ...category };
+    },
+    async renameCategory(id, name) {
+      const work = requireOpen();
+      const category = work.categories.find((item) => item.id === id);
+      if (!category || !canDeleteCategory(category)) {
+        throw new Error("找不到这个分类");
+      }
+      const trimmed = name.trim();
+      if (!trimmed) {
+        throw new Error("分类名不能为空");
+      }
+      if (categoryNameTaken(work.categories, trimmed, id)) {
+        throw new Error("同一作品内分类名不可重复");
+      }
+      category.name = trimmed;
+    },
+    async deleteCategory(id) {
+      const work = requireOpen();
+      const category = work.categories.find((item) => item.id === id);
+      if (!category || !canDeleteCategory(category)) {
+        throw new Error(category?.system ? "无法删除「未分类」" : "找不到这个分类");
+      }
+      work.categories = work.categories.filter((item) => item.id !== id);
+      for (const entry of work.settings.values()) {
+        const [next] = reassignEntriesOnCategoryDelete([entry], id);
+        if (next) {
+          entry.categoryId = next.categoryId;
+        }
+      }
+      return catalogOf(work);
+    },
+    async listWorkRecycle() {
+      return listRecycle(requireOpen());
+    },
+    async restoreRecycleItem(kind, id) {
+      const work = requireOpen();
+      if (kind === "volume") {
+        const index = work.recycledVolumes.findIndex((entry) => entry.volume.id === id);
+        if (index < 0) {
+          throw new Error("回收站里找不到这项");
+        }
+        const [entry] = work.recycledVolumes.splice(index, 1);
+        if (!entry) {
+          throw new Error("回收站里找不到这项");
+        }
+        work.outline.volumes.push(entry.volume);
+        for (const chapterId of entry.chapterIds) {
+          const chapter = work.chapters.get(chapterId);
+          if (chapter) {
+            chapter.deletedAt = null;
+            if (!work.outline.chapters.some((item) => item.id === chapterId)) {
+              work.outline.chapters.push({
+                id: chapter.id,
+                title: chapter.title,
+                status: chapter.status,
+                sortOrder: chapter.sortOrder,
+                volumeId: chapter.volumeId,
+              });
+            }
+          }
+        }
+      } else if (kind === "chapter") {
+        const chapter = work.chapters.get(id);
+        if (!chapter || chapter.deletedAt === null) {
+          throw new Error("回收站里找不到这项");
+        }
+        if (chapter.volumeId && !work.outline.volumes.some((volume) => volume.id === chapter.volumeId)) {
+          chapter.volumeId = null;
+        }
+        chapter.deletedAt = null;
+        work.outline.chapters.push({
+          id: chapter.id,
+          title: chapter.title,
+          status: chapter.status,
+          sortOrder: chapter.sortOrder,
+          volumeId: chapter.volumeId,
+        });
+      } else {
+        const maps: Record<
+          Exclude<RecycleKind, "volume" | "chapter">,
+          Map<string, Soft<{ id: string }>>
+        > = {
+          character: work.characters,
+          location: work.locations,
+          event: work.events,
+          storyline: work.storylines,
+          setting: work.settings,
+        };
+        const stored = maps[kind].get(id) as Soft<{ id: string; parentId?: string | null }> | undefined;
+        if (!stored || stored.deletedAt === null) {
+          throw new Error("回收站里找不到这项");
+        }
+        if (kind === "location" && stored.parentId) {
+          const parent = work.locations.get(stored.parentId);
+          if (!parent || parent.deletedAt !== null) {
+            stored.parentId = null;
+          }
+        }
+        stored.deletedAt = null;
+      }
+      return { catalog: catalogOf(work), outline: structuredClone(work.outline) };
+    },
+    async permanentlyDeleteRecycleItem(kind, id) {
+      const work = requireOpen();
+      if (kind === "volume") {
+        const index = work.recycledVolumes.findIndex((entry) => entry.volume.id === id);
+        if (index < 0) {
+          return;
+        }
+        const [entry] = work.recycledVolumes.splice(index, 1);
+        for (const chapterId of entry?.chapterIds ?? []) {
+          work.chapters.delete(chapterId);
+        }
+        return;
+      }
+      if (kind === "chapter") {
+        work.chapters.delete(id);
+        return;
+      }
+      if (kind === "storyline") {
+        work.storylines.delete(id);
+        return;
+      }
+      if (kind === "event") {
+        for (const line of work.storylines.values()) {
+          line.eventIds = excludeEvent(line.eventIds, id);
+        }
+        work.events.delete(id);
+        return;
+      }
+      if (kind === "location") {
+        for (const location of work.locations.values()) {
+          if (location.parentId === id) {
+            location.parentId = null;
+          }
+        }
+        work.locations.delete(id);
+        return;
+      }
+      if (kind === "character") {
+        work.characters.delete(id);
+        return;
+      }
+      work.settings.delete(id);
     },
   };
 }

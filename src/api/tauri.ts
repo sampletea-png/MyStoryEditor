@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ChapterStatus } from "../domain/outline";
+import type { RecycleKind } from "../domain/setting";
 import type { AppApi, ChapterBody, OpenedWork, WorkSummary } from "./types";
 
 export function isTauri(): boolean {
@@ -42,6 +43,36 @@ export function createTauriApi(): AppApi {
     saveChapter: (payload) => invoke("save_chapter", { payload }),
     loadChapter: (id) => invoke("load_chapter", { id }),
     failNextSave: () => invoke("fail_next_save"),
+    loadCatalog: () => invoke("load_catalog"),
+    createCharacter: () => invoke("create_character"),
+    saveCharacter: (payload) => invoke("save_character", { payload }),
+    deleteCharacter: (id) => invoke("delete_character", { id }),
+    createLocation: (parentId) => invoke("create_location", { parentId }),
+    saveLocation: (payload) => invoke("save_location", { payload }),
+    deleteLocation: (id) => invoke("delete_location", { id }),
+    createEvent: () => invoke("create_event"),
+    saveEvent: (payload) => invoke("save_event", { payload }),
+    deleteEvent: (id) => invoke("delete_event", { id }),
+    createStoryline: () => invoke("create_storyline"),
+    saveStoryline: (payload) =>
+      invoke("save_storyline", { id: payload.id, name: payload.name, summary: payload.summary }),
+    deleteStoryline: (id) => invoke("delete_storyline", { id }),
+    addEventToStoryline: (storylineId, eventId) =>
+      invoke("add_event_to_storyline", { storylineId, eventId }),
+    removeEventFromStoryline: (storylineId, eventId) =>
+      invoke("remove_event_from_storyline", { storylineId, eventId }),
+    moveStorylineEvent: (storylineId, eventId, direction) =>
+      invoke("move_storyline_event", { storylineId, eventId, direction }),
+    createSettingEntry: (categoryId) => invoke("create_setting_entry", { categoryId }),
+    saveSettingEntry: (payload) => invoke("save_setting_entry", { payload }),
+    deleteSettingEntry: (id) => invoke("delete_setting_entry", { id }),
+    createCategory: (name) => invoke("create_category", { name }),
+    renameCategory: (id, name) => invoke("rename_category", { id, name }),
+    deleteCategory: (id) => invoke("delete_category", { id }),
+    listWorkRecycle: () => invoke("list_work_recycle"),
+    restoreRecycleItem: (kind: RecycleKind, id) => invoke("restore_recycle_item", { kind, id }),
+    permanentlyDeleteRecycleItem: (kind: RecycleKind, id) =>
+      invoke("permanently_delete_recycle_item", { kind, id }),
   };
 }
 
