@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::work::{
-    is_work_package, read_manifest, restore_points_dir, write_manifest, WorkManifest, WorkPackage,
-    WorkSummary, RECYCLE_DIR,
+    is_work_package, package_lock_path, read_manifest, restore_points_dir, write_manifest,
+    WorkManifest, WorkPackage, WorkSummary, RECYCLE_DIR,
 };
 
 pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>> {
@@ -88,6 +88,10 @@ pub fn delete_to_recycle(library: &Path, id: &str) -> AppResult<()> {
         let restore_dest = unique_dest(&recycle, restore.file_name().unwrap());
         move_dir(&restore, &restore_dest)?;
     }
+    let lock = package_lock_path(&source);
+    if lock.is_file() {
+        let _ = fs::remove_file(lock);
+    }
     Ok(())
 }
 
@@ -101,6 +105,10 @@ pub fn restore_work(library: &Path, id: &str) -> AppResult<()> {
 pub fn permanently_delete(library: &Path, id: &str) -> AppResult<()> {
     let source = find_work_dir(library, id, true)?;
     fs::remove_dir_all(&source)?;
+    let lock = package_lock_path(&source);
+    if lock.is_file() {
+        let _ = fs::remove_file(lock);
+    }
     let restore = restore_points_dir(&source);
     if restore.exists() {
         fs::remove_dir_all(restore)?;

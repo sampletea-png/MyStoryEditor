@@ -103,7 +103,15 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
                 </form>
               ) : (
                 <>
-                  <button type="button" className="work-open" onClick={() => void onOpenWork(work.id)}>
+                  <button
+                    type="button"
+                    className="work-open"
+                    onClick={() =>
+                      void onOpenWork(work.id).catch((err) =>
+                        setError(err instanceof Error ? err.message : String(err)),
+                      )
+                    }
+                  >
                     <strong>{work.name}</strong>
                     <span className="muted">{work.folderName}</span>
                   </button>

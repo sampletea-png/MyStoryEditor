@@ -193,11 +193,36 @@ function displayRecycleName(kind: RecycleKind, name: string): string {
   }
 }
 
+type MemoryShared = {
+  libraryPath: string | null;
+  works: Map<string, StoredWork>;
+  recycled: Map<string, StoredWork>;
+  locks: Map<string, symbol>;
+};
+
+function createMemoryShared(): MemoryShared {
+  return {
+    libraryPath: null,
+    works: new Map(),
+    recycled: new Map(),
+    locks: new Map(),
+  };
+}
+
 export function createMemoryApi(): AppApi {
-  let libraryPath: string | null = null;
+  return bindMemoryApi(createMemoryShared());
+}
+
+export function createMemoryApiPair(): [AppApi, AppApi] {
+  const shared = createMemoryShared();
+  return [bindMemoryApi(shared), bindMemoryApi(shared)];
+}
+
+function bindMemoryApi(shared: MemoryShared): AppApi {
+  const holder = Symbol();
   const defaultLibraryPath = "文档/小说作品库";
-  const works = new Map<string, StoredWork>();
-  const recycled = new Map<string, StoredWork>();
+  const works = shared.works;
+  const recycled = shared.recycled;
   let openId: string | null = null;
   let failNext = false;
 
@@ -210,6 +235,24 @@ export function createMemoryApi(): AppApi {
       throw new Error("没有打开的作品");
     }
     return work;
+  };
+
+  const acquireLock = (path: string) => {
+    const current = shared.locks.get(path);
+    if (current && current !== holder) {
+      throw new Error("该作品已在其他窗口打开");
+    }
+    shared.locks.set(path, holder);
+  };
+
+  const releaseLock = () => {
+    if (!openId) {
+      return;
+    }
+    const work = works.get(openId) ?? recycled.get(openId);
+    if (work && shared.locks.get(work.summary.path) === holder) {
+      shared.locks.delete(work.summary.path);
+    }
   };
 
   const syncOutline = (work: StoredWork, outline: Outline) => {
@@ -282,10 +325,10 @@ export function createMemoryApi(): AppApi {
 
   return {
     async getBootstrap() {
-      return { libraryPath, defaultLibraryPath };
+      return { libraryPath: shared.libraryPath, defaultLibraryPath };
     },
     async setLibraryPath(path) {
-      libraryPath = path;
+      shared.libraryPath = path;
     },
     async pickDirectory() {
       return defaultLibraryPath;
@@ -325,7 +368,7 @@ export function createMemoryApi(): AppApi {
           id: createId(),
           name,
           folderName,
-          path: `${libraryPath ?? defaultLibraryPath}/${folderName}`,
+          path: `${shared.libraryPath ?? defaultLibraryPath}/${folderName}`,
           recycled: false,
         },
         outline: {
@@ -350,6 +393,8 @@ export function createMemoryApi(): AppApi {
         ...emptyWorkFields(),
       };
       works.set(work.summary.id, work);
+      releaseLock();
+      acquireLock(work.summary.path);
       openId = work.summary.id;
       return opened(work);
     },
@@ -368,6 +413,7 @@ export function createMemoryApi(): AppApi {
       work.summary.recycled = true;
       recycled.set(id, work);
       if (openId === id) {
+        releaseLock();
         openId = null;
       }
     },
@@ -389,10 +435,15 @@ export function createMemoryApi(): AppApi {
       if (!work) {
         throw new Error("找不到这部作品");
       }
+      if (openId !== id) {
+        releaseLock();
+      }
+      acquireLock(work.summary.path);
       openId = id;
       return opened(work);
     },
     async closeWork() {
+      releaseLock();
       openId = null;
     },
     async createVolume(title) {

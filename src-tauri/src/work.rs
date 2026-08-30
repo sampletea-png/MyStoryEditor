@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,6 +16,7 @@ use crate::setting::SettingCatalogDto;
 
 pub const RECYCLE_DIR: &str = "作品库回收区";
 pub const RESTORE_SUFFIX: &str = ".恢复点";
+pub const WORK_ALREADY_OPEN: &str = "该作品已在其他窗口打开";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,6 +119,7 @@ pub struct WorkPackage {
     pub path: PathBuf,
     pub manifest: WorkManifest,
     pub(crate) conn: Connection,
+    _lock: File,
 }
 
 impl WorkPackage {
@@ -143,7 +145,13 @@ impl WorkPackage {
         if !fts5 {
             return Err(AppError::Message("捆绑 SQLite 无法创建 FTS5 表".into()));
         }
-        let package = Self { path, manifest, conn };
+        let lock = acquire_package_lock(&path)?;
+        let package = Self {
+            path,
+            manifest,
+            conn,
+            _lock: lock,
+        };
         let chapter_id = Uuid::new_v4().to_string();
         package.conn.execute(
             "INSERT INTO chapters (id, volume_id, title, status, body_json, document_schema_version, word_count, sort_order)
@@ -160,6 +168,7 @@ impl WorkPackage {
 
     pub fn open(path: &Path) -> AppResult<Self> {
         let manifest = read_manifest(path)?;
+        let lock = acquire_package_lock(path)?;
         let conn = Connection::open(path.join("work.sqlite"))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         ensure_schema(&conn)?;
@@ -167,6 +176,7 @@ impl WorkPackage {
             path: path.to_path_buf(),
             manifest,
             conn,
+            _lock: lock,
         })
     }
 
@@ -551,6 +561,42 @@ pub fn is_work_package(path: &Path) -> bool {
     path.join("work.json").is_file() && path.join("work.sqlite").is_file()
 }
 
+pub fn package_lock_path(work_dir: &Path) -> PathBuf {
+    let mut path = work_dir.as_os_str().to_owned();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+fn acquire_package_lock(work_dir: &Path) -> AppResult<File> {
+    let lock_path = package_lock_path(work_dir);
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    match options.open(&lock_path) {
+        Ok(file) => Ok(file),
+        Err(err) if is_already_open_io(&err) => Err(AppError::Message(WORK_ALREADY_OPEN.into())),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn is_already_open_io(err: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        err.raw_os_error() == Some(32)
+    }
+    #[cfg(not(windows))]
+    {
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+        )
+    }
+}
+
 pub fn restore_points_dir(work_dir: &Path) -> PathBuf {
     let name = work_dir
         .file_name()
@@ -682,5 +728,116 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
             .unwrap();
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn second_open_of_same_package_is_not_writable() {
+        let dir = tempdir().unwrap();
+        let first = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let err = match WorkPackage::open(&first.path) {
+            Ok(_) => panic!("second open must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("已在其他窗口打开"),
+            "unexpected error: {err}"
+        );
+        first
+            .conn
+            .execute("UPDATE chapters SET title = '仍可写' WHERE sort_order = 0", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn dropping_the_holder_releases_the_package_lock() {
+        let dir = tempdir().unwrap();
+        let first = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let path = first.path.clone();
+        drop(first);
+        let reopened = WorkPackage::open(&path).unwrap();
+        reopened
+            .conn
+            .execute("UPDATE chapters SET title = '锁已释放' WHERE sort_order = 0", [])
+            .unwrap();
+        let title: String = reopened
+            .conn
+            .query_row("SELECT title FROM chapters WHERE sort_order = 0", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "锁已释放");
+    }
+
+    #[test]
+    fn hold_work_lock_child() {
+        let Ok(path) = std::env::var("STORY_EDITOR_HOLD_WORK_LOCK") else {
+            return;
+        };
+        let ready = std::env::var("STORY_EDITOR_HOLD_READY").expect("ready path");
+        let _package = WorkPackage::open(std::path::Path::new(&path)).expect("child open");
+        std::fs::write(&ready, "ok").expect("signal ready");
+        std::thread::park();
+    }
+
+    #[test]
+    fn killed_process_releases_exclusive_work_lock() {
+        let dir = tempdir().unwrap();
+        let created = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let path = created.path.clone();
+        drop(created);
+
+        let ready = dir.path().join("holder.ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("work::tests::hold_work_lock_child")
+            .env("STORY_EDITOR_HOLD_WORK_LOCK", &path)
+            .env("STORY_EDITOR_HOLD_READY", &ready)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lock holder");
+
+        let started = std::time::Instant::now();
+        while !ready.is_file() {
+            if started.elapsed() > std::time::Duration::from_secs(15) {
+                let _ = child.kill();
+                panic!("lock holder child did not become ready");
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                panic!("lock holder child exited early: {status}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        match WorkPackage::open(&path) {
+            Ok(_) => {
+                let _ = child.kill();
+                panic!("second process must not open while holder is alive");
+            }
+            Err(err) => assert!(
+                err.to_string().contains("已在其他窗口打开"),
+                "unexpected error: {err}"
+            ),
+        }
+
+        child.kill().expect("kill holder");
+        child.wait().expect("wait holder");
+
+        let started = std::time::Instant::now();
+        let reopened = loop {
+            match WorkPackage::open(&path) {
+                Ok(package) => break package,
+                Err(err) if started.elapsed() < std::time::Duration::from_secs(5) => {
+                    let _ = err;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => panic!("lock should release after process death: {err}"),
+            }
+        };
+        reopened
+            .conn
+            .execute("UPDATE chapters SET title = '进程死后可写' WHERE sort_order = 0", [])
+            .unwrap();
     }
 }

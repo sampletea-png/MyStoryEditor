@@ -137,6 +137,15 @@ fn permanently_delete_work(state: State<AppState>, id: String) -> Result<(), Str
 fn open_work(state: State<AppState>, id: String) -> Result<OpenedWorkDto, String> {
     let library = library_path(&state)?;
     let path = find_work_dir(&library, &id, false).map_err(String::from)?;
+    {
+        let mut open = state.open.lock().expect("open work lock");
+        if let Some(current) = open.as_ref() {
+            if current.path == path {
+                return current.opened().map_err(String::from);
+            }
+        }
+        *open = None;
+    }
     let package = WorkPackage::open(&path).map_err(String::from)?;
     let opened = package.opened().map_err(String::from)?;
     *state.open.lock().expect("open work lock") = Some(package);

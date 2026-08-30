@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { UNCATEGORIZED_ID } from "../domain/settingCategories";
 import { displaySettingName } from "../domain/settingNames";
 import { storylineAssociationRollup } from "../domain/association";
-import { createMemoryApi } from "./memory";
+import { createMemoryApi, createMemoryApiPair } from "./memory";
 
 describe("setting materials through AppApi", () => {
   it("lets a work with no chapters hold all five kinds", async () => {
@@ -177,5 +177,44 @@ describe("associations and search through AppApi", () => {
       scrollTop: 0,
     });
     expect(result.wordCount).toBe(11);
+  });
+});
+
+describe("work exclusive lock through AppApi", () => {
+  it("refuses a second writable open of the same package", async () => {
+    const [first, second] = createMemoryApiPair();
+    await first.setLibraryPath("文档/小说作品库");
+    const opened = await first.createWork("北境行纪");
+    await expect(second.openWork(opened.work.id)).rejects.toThrow("已在其他窗口打开");
+    await expect(
+      second.saveChapter({
+        id: opened.chapter!.id,
+        title: opened.chapter!.title,
+        body: opened.chapter!.body,
+        cursorFrom: 1,
+        cursorTo: 1,
+        scrollTop: 0,
+      }),
+    ).rejects.toThrow("没有打开的作品");
+  });
+
+  it("lets the same package be edited after the first window closes", async () => {
+    const [first, second] = createMemoryApiPair();
+    await first.setLibraryPath("文档/小说作品库");
+    const opened = await first.createWork("北境行纪");
+    await first.closeWork();
+    const again = await second.openWork(opened.work.id);
+    const result = await second.saveChapter({
+      id: again.chapter!.id,
+      title: again.chapter!.title,
+      body: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "第二处可写" }] }],
+      },
+      cursorFrom: 1,
+      cursorTo: 1,
+      scrollTop: 0,
+    });
+    expect(result.wordCount).toBe(5);
   });
 });
