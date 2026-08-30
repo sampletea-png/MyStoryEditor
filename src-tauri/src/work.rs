@@ -94,6 +94,21 @@ pub struct OpenedWorkDto {
     pub work_word_count: i64,
     pub fts5: bool,
     pub catalog: SettingCatalogDto,
+    pub work_map: Option<WorkMapDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkMapDto {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutWorkMapPayload {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,6 +217,7 @@ impl WorkPackage {
             work_word_count: self.work_word_count()?,
             fts5: fts5_available(&self.conn)?,
             catalog: self.catalog()?,
+            work_map: self.load_work_map()?,
         })
     }
 
@@ -535,6 +551,62 @@ impl WorkPackage {
         )?;
         Ok(())
     }
+
+    pub fn put_work_map(&self, file_name: &str, bytes: &[u8]) -> AppResult<WorkMapDto> {
+        let (asset_name, mime_type) = map_kind_from_file_name(file_name)?;
+        self.remove_map_assets()?;
+        let dest = self.path.join("assets").join(asset_name);
+        fs::create_dir_all(self.path.join("assets"))?;
+        fs::write(&dest, bytes)?;
+        self.conn.execute("DELETE FROM work_map", [])?;
+        self.conn.execute(
+            "INSERT INTO work_map (id, file_name, mime_type) VALUES (1, ?1, ?2)",
+            params![asset_name, mime_type],
+        )?;
+        Ok(WorkMapDto {
+            mime_type: mime_type.to_string(),
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    pub fn clear_work_map(&self) -> AppResult<()> {
+        self.remove_map_assets()?;
+        self.conn.execute("DELETE FROM work_map", [])?;
+        Ok(())
+    }
+
+    pub fn load_work_map(&self) -> AppResult<Option<WorkMapDto>> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT file_name, mime_type FROM work_map WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((file_name, mime_type)) = row else {
+            return Ok(None);
+        };
+        let path = self.path.join("assets").join(&file_name);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(WorkMapDto {
+            mime_type,
+            bytes: fs::read(path)?,
+        }))
+    }
+
+    fn remove_map_assets(&self) -> AppResult<()> {
+        let dir = self.path.join("assets");
+        for name in ["map.jpg", "map.png", "map.webp"] {
+            let path = dir.join(name);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn read_manifest(path: &Path) -> AppResult<WorkManifest> {
@@ -612,6 +684,25 @@ pub fn count_document_words(node: &Value) -> i64 {
     count_words(&extract_plain_text(node))
 }
 
+fn map_kind_from_file_name(file_name: &str) -> AppResult<(&'static str, &'static str)> {
+    let base = file_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(file_name);
+    let ext = base
+        .rsplit('.')
+        .next()
+        .filter(|part| *part != base)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Ok(("map.jpg", "image/jpeg")),
+        "png" => Ok(("map.png", "image/png")),
+        "webp" => Ok(("map.webp", "image/webp")),
+        _ => Err(AppError::Message("总图只支持 png、jpg 或 webp".into())),
+    }
+}
+
 #[allow(dead_code)]
 pub fn folder_name_preview(name: &str) -> String {
     folder_name_from_work_name(name)
@@ -682,5 +773,76 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
             .unwrap();
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn putting_png_replaces_jpg_asset_and_leaves_one_file() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let jpeg = vec![0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
+        let png = vec![0x89, 0x50, 0x4e, 0x47, 9, 8, 7];
+        let first = work.put_work_map("北境.jpg", &jpeg).unwrap();
+        assert_eq!(first.mime_type, "image/jpeg");
+        assert_eq!(first.bytes, jpeg);
+        assert!(work.path.join("assets").join("map.jpg").is_file());
+        let second = work.put_work_map("北境.png", &png).unwrap();
+        assert_eq!(second.mime_type, "image/png");
+        assert_eq!(second.bytes, png);
+        assert!(!work.path.join("assets").join("map.jpg").exists());
+        assert!(work.path.join("assets").join("map.png").is_file());
+        let assets: Vec<_> = std::fs::read_dir(work.path.join("assets"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(assets, vec![std::ffi::OsString::from("map.png")]);
+        let path = work.path.clone();
+        drop(work);
+        let reopened = WorkPackage::open(&path).unwrap();
+        let map = reopened.opened().unwrap().work_map.unwrap();
+        assert_eq!(map.mime_type, "image/png");
+        assert_eq!(map.bytes, png);
+    }
+
+    #[test]
+    fn clearing_map_keeps_locations() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let mut location = work.create_location(None).unwrap();
+        location.name = "北境".into();
+        work.save_location(&location).unwrap();
+        work.put_work_map("map.webp", &[1, 2, 3, 4]).unwrap();
+        work.clear_work_map().unwrap();
+        assert!(work.opened().unwrap().work_map.is_none());
+        assert!(!work.path.join("assets").join("map.webp").exists());
+        assert_eq!(
+            work.catalog()
+                .unwrap()
+                .locations
+                .iter()
+                .find(|item| item.id == location.id)
+                .unwrap()
+                .name,
+            "北境"
+        );
+    }
+
+    #[test]
+    fn v3_work_gains_empty_work_map_on_open() {
+        let dir = tempdir().unwrap();
+        let created = WorkPackage::create(dir.path(), "旧作").unwrap();
+        let path = created.path.clone();
+        created
+            .conn
+            .pragma_update(None, "user_version", 3)
+            .unwrap();
+        created.conn.execute_batch("DROP TABLE IF EXISTS work_map;").unwrap();
+        drop(created);
+        let opened = WorkPackage::open(&path).unwrap();
+        assert!(opened.opened().unwrap().work_map.is_none());
+        let version: i32 = opened
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
     }
 }

@@ -45,6 +45,11 @@ export type Bootstrap = {
   defaultLibraryPath: string;
 };
 
+export type WorkMapImage = {
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+  bytes: number[];
+};
+
 export type OpenedWork = {
   work: WorkSummary;
   outline: Outline;
@@ -53,6 +58,7 @@ export type OpenedWork = {
   workWordCount: number;
   fts5: boolean;
   catalog: SettingCatalog;
+  workMap: WorkMapImage | null;
 };
 
 export type RestoreResult = {
@@ -152,4 +158,7 @@ export type AppApi = {
   }) => Promise<Association>;
   updateAssociationNote: (id: string, note: string) => Promise<void>;
   deleteAssociation: (id: string) => Promise<void>;
+  getWorkMap: () => Promise<WorkMapImage | null>;
+  putWorkMap: (payload: { fileName: string; bytes: number[] }) => Promise<WorkMapImage>;
+  clearWorkMap: () => Promise<void>;
 };

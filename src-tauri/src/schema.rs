@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-pub const USER_VERSION: i32 = 3;
+pub const USER_VERSION: i32 = 4;
 pub const DOCUMENT_SCHEMA_VERSION: i32 = 1;
 pub const EMPTY_DOCUMENT: &str = r#"{"type":"doc","content":[{"type":"paragraph"}]}"#;
 pub const UNCATEGORIZED_ID: &str = "uncategorized";
@@ -116,10 +116,19 @@ const V3_TABLES: &str = r#"
             ON associations(left_kind, left_id, right_kind, right_id);
         "#;
 
+const V4_TABLES: &str = r#"
+        CREATE TABLE IF NOT EXISTS work_map (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            file_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL
+        );
+        "#;
+
 pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
     conn.execute_batch(V1_TABLES)?;
     migrate_v2_setting_tables(conn)?;
     migrate_v3_associations(conn)?;
+    migrate_v4_work_map(conn)?;
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
 }
@@ -135,6 +144,9 @@ pub fn ensure_schema(conn: &Connection) -> AppResult<bool> {
     if version < 3 {
         migrate_v3_associations(conn)?;
     }
+    if version < 4 {
+        migrate_v4_work_map(conn)?;
+    }
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     ensure_fts5(conn)
 }
@@ -146,6 +158,11 @@ fn migrate_v2_setting_tables(conn: &Connection) -> AppResult<()> {
 
 fn migrate_v3_associations(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(V3_TABLES)?;
+    Ok(())
+}
+
+fn migrate_v4_work_map(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(V4_TABLES)?;
     Ok(())
 }
 

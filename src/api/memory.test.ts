@@ -179,3 +179,43 @@ describe("associations and search through AppApi", () => {
     expect(result.wordCount).toBe(11);
   });
 });
+
+const JPEG_BYTES = [0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
+const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 9, 8, 7];
+
+describe("work map through AppApi", () => {
+  it("shows a jpg map and keeps only the later png", async () => {
+    const api = createMemoryApi();
+    await api.createWork("北境行纪");
+    const jpeg = await api.putWorkMap({ fileName: "北境.jpg", bytes: JPEG_BYTES });
+    expect(jpeg.mimeType).toBe("image/jpeg");
+    expect(jpeg.bytes).toEqual(JPEG_BYTES);
+    expect((await api.getWorkMap())?.mimeType).toBe("image/jpeg");
+    const png = await api.putWorkMap({ fileName: "北境.png", bytes: PNG_BYTES });
+    expect(png.mimeType).toBe("image/png");
+    expect(png.bytes).toEqual(PNG_BYTES);
+    const current = await api.getWorkMap();
+    expect(current?.mimeType).toBe("image/png");
+    expect(current?.bytes).toEqual(PNG_BYTES);
+  });
+
+  it("keeps locations after the map is cleared", async () => {
+    const api = createMemoryApi();
+    await api.createWork("北境行纪");
+    const north = await api.createLocation();
+    await api.saveLocation({ ...north, name: "北境" });
+    await api.putWorkMap({ fileName: "map.webp", bytes: [1, 2, 3, 4] });
+    await api.clearWorkMap();
+    expect(await api.getWorkMap()).toBeNull();
+    const catalog = await api.loadCatalog();
+    expect(catalog.locations.find((item) => item.id === north.id)?.name).toBe("北境");
+  });
+
+  it("rejects a gif as the work map", async () => {
+    const api = createMemoryApi();
+    await api.createWork("北境行纪");
+    await expect(api.putWorkMap({ fileName: "map.gif", bytes: [1] })).rejects.toThrow(
+      "总图只支持 png、jpg 或 webp",
+    );
+  });
+});

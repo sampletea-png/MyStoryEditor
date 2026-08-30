@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "../api/tauri";
-import type { AppApi, ChapterBody, OpenedWork } from "../api/types";
+import type { AppApi, ChapterBody, OpenedWork, WorkMapImage } from "../api/types";
 import { createAutosaveSession, type SaveStatus } from "../domain/autosave";
 import {
   canCreateChapterAtRoot,
@@ -15,6 +15,7 @@ import { countDocumentWords, type TipTapNode } from "../domain/wordCount";
 import { ChapterEditor } from "../editor/ChapterEditor";
 import { CommandPalette } from "./CommandPalette";
 import { SettingPanel, type PanelFocus } from "./SettingPanel";
+import { WorkMapOverlay } from "./WorkMapOverlay";
 
 type Props = {
   api: AppApi;
@@ -50,6 +51,8 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [panelFocus, setPanelFocus] = useState<PanelFocus | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [workMap, setWorkMap] = useState<WorkMapImage | null>(initial.workMap);
 
   const draftRef = useRef(draft);
   const titleRef = useRef(title);
@@ -221,6 +224,9 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           }}
         >
           改名
+        </button>
+        <button type="button" onClick={() => setMapOpen(true)}>
+          总图
         </button>
         {initial.fts5 ? null : <span className="error">FTS5 不可用</span>}
       </header>
@@ -469,6 +475,14 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
         ) : null}
         {error ? <span className="error">{error}</span> : null}
       </footer>
+      {mapOpen ? (
+        <WorkMapOverlay
+          api={api}
+          map={workMap}
+          onMapChange={setWorkMap}
+          onClose={() => setMapOpen(false)}
+        />
+      ) : null}
       {commandOpen ? (
         <CommandPalette
           api={api}

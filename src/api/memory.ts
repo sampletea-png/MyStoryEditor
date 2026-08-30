@@ -39,9 +39,13 @@ import {
   type Association,
 } from "../domain/association";
 import { containsQuery, snippetAround } from "../domain/workSearch";
+import {
+  mapImageKindFromFileName,
+  mapImageMimeType,
+} from "../domain/workMap";
 import { EMPTY_DOCUMENT } from "../editor/schema";
 import { countDocumentWords, extractPlainText, type TipTapNode } from "../domain/wordCount";
-import type { AppApi, ChapterBody, OpenedWork, Session, WorkSummary } from "./types";
+import type { AppApi, ChapterBody, OpenedWork, Session, WorkMapImage, WorkSummary } from "./types";
 
 type StoredChapter = Chapter & {
   body: TipTapNode;
@@ -74,6 +78,7 @@ type StoredWork = {
   storylines: Map<string, Soft<Storyline>>;
   settings: Map<string, Soft<SettingEntry>>;
   associations: Soft<Association>[];
+  workMap: WorkMapImage | null;
 };
 
 function createId() {
@@ -155,6 +160,7 @@ function opened(work: StoredWork): OpenedWork {
     workWordCount: workWordCount(work),
     fts5: true,
     catalog: catalogOf(work),
+    workMap: work.workMap ? { mimeType: work.workMap.mimeType, bytes: [...work.workMap.bytes] } : null,
   };
 }
 
@@ -168,6 +174,7 @@ function emptyWorkFields() {
     storylines: new Map<string, Soft<Storyline>>(),
     settings: new Map<string, Soft<SettingEntry>>(),
     associations: [] as Soft<Association>[],
+    workMap: null as WorkMapImage | null,
   };
 }
 
@@ -1016,6 +1023,22 @@ export function createMemoryApi(): AppApi {
         throw new Error("找不到这条关联");
       }
       item.deletedAt = nowTs();
+    },
+    async getWorkMap() {
+      const map = requireOpen().workMap;
+      return map ? { mimeType: map.mimeType, bytes: [...map.bytes] } : null;
+    },
+    async putWorkMap(payload) {
+      const work = requireOpen();
+      const kind = mapImageKindFromFileName(payload.fileName);
+      work.workMap = {
+        mimeType: mapImageMimeType(kind),
+        bytes: [...payload.bytes],
+      };
+      return { mimeType: work.workMap.mimeType, bytes: [...work.workMap.bytes] };
+    },
+    async clearWorkMap() {
+      requireOpen().workMap = null;
     },
   };
 }
