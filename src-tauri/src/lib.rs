@@ -24,7 +24,7 @@ use setting::{
     CharacterDto, EventDto, LocationDto, RecycleItemDto, RestoreResultDto, SettingCatalogDto,
     SettingCategoryDto, SettingEntryDto, StorylineDto,
 };
-use backup::{list_restore_points as scan_restore_points, RestoreKind, RestorePoint};
+use backup::{RestoreKind, RestorePoint};
 use work::{
     CreateChapterOptions, OpenedWorkDto, OutlineDto, SaveChapterPayload, WorkPackage, WorkSummary,
 };
@@ -161,7 +161,7 @@ fn create_restore_point(state: State<AppState>) -> Result<RestorePoint, String> 
 
 #[tauri::command]
 fn list_restore_points(state: State<AppState>) -> Result<Vec<RestorePoint>, String> {
-    with_open(&state, |work| scan_restore_points(&work.path)).map_err(String::from)
+    with_open(&state, |work| work.list_restore_points()).map_err(String::from)
 }
 
 #[tauri::command]

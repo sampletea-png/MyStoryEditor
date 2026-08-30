@@ -5,7 +5,9 @@ use std::time::Duration;
 use rusqlite::{backup::Backup, Connection};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
+#[cfg(test)]
+use crate::error::AppError;
 
 pub const RESTORE_SUFFIX: &str = ".恢复点";
 
@@ -45,30 +47,6 @@ pub fn backup_connection(src: &Connection, dest: &Path) -> AppResult<()> {
     let backup = Backup::new(src, &mut dst)?;
     backup.run_to_completion(5, Duration::from_millis(25), None)?;
     Ok(())
-}
-
-/// 对打开中的库做文件级热拷贝必须被否决。
-pub fn copy_sqlite_file(src: &Path, dest: &Path) -> AppResult<()> {
-    if sqlite_is_open(src) {
-        return Err(AppError::Message(
-            "打开中的库不能热拷贝，必须使用 Backup API 或 VACUUM INTO".into(),
-        ));
-    }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(src, dest)?;
-    Ok(())
-}
-
-fn sqlite_is_open(src: &Path) -> bool {
-    wal_sidecar(src, "-wal").is_file() || wal_sidecar(src, "-shm").is_file()
-}
-
-fn wal_sidecar(src: &Path, suffix: &str) -> PathBuf {
-    let mut name = src.as_os_str().to_os_string();
-    name.push(suffix);
-    PathBuf::from(name)
 }
 
 pub fn create_restore_point(
@@ -218,6 +196,32 @@ fn copy_assets(source: &Path, dest: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// Test-only probe: a file-level copy of an open SQLite database must be rejected.
+/// Production copies go through `backup_connection` (Backup API), never this path.
+#[cfg(test)]
+pub(crate) fn probe_hot_copy_of_open_sqlite(src: &Path, _dest: &Path) -> AppResult<()> {
+    if sqlite_is_open(src) {
+        return Err(AppError::Message(
+            "打开中的库不能热拷贝，必须使用 Backup API 或 VACUUM INTO".into(),
+        ));
+    }
+    Err(AppError::Message(
+        "probe_hot_copy_of_open_sqlite only exercises the open-database deny path".into(),
+    ))
+}
+
+#[cfg(test)]
+fn sqlite_is_open(src: &Path) -> bool {
+    wal_sidecar(src, "-wal").is_file() || wal_sidecar(src, "-shm").is_file()
+}
+
+#[cfg(test)]
+fn wal_sidecar(src: &Path, suffix: &str) -> PathBuf {
+    let mut name = src.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,7 +235,7 @@ mod tests {
         let conn = Connection::open(&src).unwrap();
         conn.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);")
             .unwrap();
-        let err = copy_sqlite_file(&src, &dest).unwrap_err();
+        let err = probe_hot_copy_of_open_sqlite(&src, &dest).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("Backup API") || message.contains("VACUUM INTO"),

@@ -484,6 +484,10 @@ impl WorkPackage {
         create_restore_point(&self.path, &self.conn, kind)
     }
 
+    pub fn list_restore_points(&self) -> AppResult<Vec<RestorePoint>> {
+        crate::backup::list_restore_points(&self.path)
+    }
+
     fn placement(
         &self,
         has_volumes: bool,
@@ -792,7 +796,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
         let dest = dir.path().join("hot-copy.sqlite");
-        let err = crate::backup::copy_sqlite_file(&work.path.join("work.sqlite"), &dest).unwrap_err();
+        let err = crate::backup::probe_hot_copy_of_open_sqlite(&work.path.join("work.sqlite"), &dest)
+            .unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("Backup API") || message.contains("VACUUM INTO"),
@@ -837,11 +842,11 @@ mod tests {
         drop(conn);
 
         let opened = WorkPackage::open(&path).unwrap();
-        let points = crate::backup::list_restore_points(&path).unwrap();
+        let points = opened.list_restore_points().unwrap();
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].kind, RestoreKind::Migration);
-        let snapshot = Connection::open(points[0].path.join("work.sqlite")).unwrap();
-        let version: i32 = snapshot
+        let restore_point_conn = Connection::open(points[0].path.join("work.sqlite")).unwrap();
+        let version: i32 = restore_point_conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 1);
