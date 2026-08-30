@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAutosaveController } from "./autosave";
+import { createAutosaveController, createAutosaveSession } from "./autosave";
 
 describe("createAutosaveController", () => {
   it("does not persist while IME composition is in progress", async () => {
@@ -32,5 +32,23 @@ describe("createAutosaveController", () => {
     expect(controller.hasUnpersistedChanges()).toBe(true);
 
     controller.dispose();
+  });
+});
+
+describe("createAutosaveSession", () => {
+  it("still persists after effect cleanup dispose then the same session is reused", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const session = createAutosaveSession(persist, 3000);
+
+    session.dispose();
+    session.notifyChange(false);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(session.getStatus()).toBe("已保存");
+
+    session.dispose();
+    vi.useRealTimers();
   });
 });

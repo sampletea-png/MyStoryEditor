@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "../api/tauri";
 import type { AppApi, ChapterBody, OpenedWork } from "../api/types";
-import { createAutosaveController, type SaveStatus } from "../domain/autosave";
+import { createAutosaveSession, type SaveStatus } from "../domain/autosave";
 import {
   canCreateChapterAtRoot,
   displayChapterTitle,
@@ -60,7 +60,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
     const current = chapterRef.current;
     const body = draftRef.current;
     if (!current || !body) {
-      return;
+      throw new Error("没有可保存的章节");
     }
     const result = await api.saveChapter({
       id: current.id,
@@ -82,7 +82,12 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
     }));
   }, [api]);
 
-  const autosave = useMemo(() => createAutosaveController(persist, 3000), [persist]);
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  const autosave = useMemo(
+    () => createAutosaveSession(() => persistRef.current(), 3000),
+    [],
+  );
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -366,7 +371,15 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
                   value={title}
                   placeholder="未命名章节"
                   onChange={(event) => {
-                    setTitle(event.target.value);
+                    const nextTitle = event.target.value;
+                    titleRef.current = nextTitle;
+                    setTitle(nextTitle);
+                    setOutline((prev) => ({
+                      ...prev,
+                      chapters: prev.chapters.map((item) =>
+                        item.id === chapter.id ? { ...item, title: nextTitle } : item,
+                      ),
+                    }));
                     autosave.notifyChange(false);
                   }}
                 />
@@ -394,13 +407,14 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
                 composing={composing}
                 onComposingChange={setComposing}
                 onUpdate={(payload) => {
-                  setDraft(payload.document);
-                  setChapterWords(countDocumentWords(payload.document));
+                  draftRef.current = payload.document;
                   cursorRef.current = {
                     from: payload.cursorFrom,
                     to: payload.cursorTo,
                     scrollTop: payload.scrollTop,
                   };
+                  setDraft(payload.document);
+                  setChapterWords(countDocumentWords(payload.document));
                   autosave.notifyChange(payload.composing);
                 }}
               />

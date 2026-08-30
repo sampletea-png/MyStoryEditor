@@ -9,6 +9,7 @@ export type AutosaveController = {
   dispose: () => void;
   getStatus: () => SaveStatus;
   hasUnpersistedChanges: () => boolean;
+  isDisposed: () => boolean;
 };
 
 export function createAutosaveController(
@@ -95,6 +96,47 @@ export function createAutosaveController(
     },
     hasUnpersistedChanges() {
       return dirty || status === "保存失败" || status === "保存中";
+    },
+    isDisposed() {
+      return disposed;
+    },
+  };
+}
+
+export function createAutosaveSession(
+  persist: AutosavePersist,
+  delayMs = 3000,
+): AutosaveController {
+  let inner = createAutosaveController(persist, delayMs);
+
+  const live = () => {
+    if (inner.isDisposed()) {
+      inner = createAutosaveController(persist, delayMs);
+    }
+    return inner;
+  };
+
+  return {
+    notifyChange(composing) {
+      live().notifyChange(composing);
+    },
+    saveNow() {
+      return live().saveNow();
+    },
+    retry() {
+      return live().retry();
+    },
+    dispose() {
+      inner.dispose();
+    },
+    getStatus() {
+      return inner.getStatus();
+    },
+    hasUnpersistedChanges() {
+      return inner.hasUnpersistedChanges();
+    },
+    isDisposed() {
+      return inner.isDisposed();
     },
   };
 }
