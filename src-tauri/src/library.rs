@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::work::{
     is_work_package, read_manifest, restore_points_dir, write_manifest, WorkManifest, WorkPackage,
-    WorkSummary, RECYCLE_DIR,
+    WorkSummary, RECYCLE_DIR, RESTORE_SUFFIX,
 };
 
 pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>> {
@@ -65,7 +65,7 @@ fn assign_unique_identities(packages: &mut [(PathBuf, WorkManifest)]) -> AppResu
 fn skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name == RECYCLE_DIR || name.ends_with(".恢复点"))
+        .is_some_and(|name| name == RECYCLE_DIR || name.ends_with(RESTORE_SUFFIX))
 }
 
 pub fn find_work_dir(library: &Path, id: &str, recycled: bool) -> AppResult<PathBuf> {

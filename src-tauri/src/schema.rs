@@ -124,8 +124,17 @@ pub fn initialize_work_db(conn: &Connection) -> AppResult<bool> {
     ensure_fts5(conn)
 }
 
+pub fn schema_version(conn: &Connection) -> AppResult<i32> {
+    Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+pub fn needs_schema_migration(conn: &Connection) -> AppResult<bool> {
+    let version = schema_version(conn)?;
+    Ok(version >= 1 && version < USER_VERSION)
+}
+
 pub fn ensure_schema(conn: &Connection) -> AppResult<bool> {
-    let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let version = schema_version(conn)?;
     if version < 1 {
         return initialize_work_db(conn);
     }

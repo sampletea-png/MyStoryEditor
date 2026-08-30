@@ -79,6 +79,15 @@ export type SearchResults = {
   settings: SettingHit[];
 };
 
+export type RestoreKind = "manual" | "auto" | "migration";
+
+export type RestorePoint = {
+  path: string;
+  folderName: string;
+  createdAt: string;
+  kind: RestoreKind;
+};
+
 export type AppApi = {
   getBootstrap: () => Promise<Bootstrap>;
   setLibraryPath: (path: string) => Promise<void>;
@@ -152,4 +161,6 @@ export type AppApi = {
   }) => Promise<Association>;
   updateAssociationNote: (id: string, note: string) => Promise<void>;
   deleteAssociation: (id: string) => Promise<void>;
+  createRestorePoint: () => Promise<RestorePoint>;
+  listRestorePoints: () => Promise<RestorePoint[]>;
 };

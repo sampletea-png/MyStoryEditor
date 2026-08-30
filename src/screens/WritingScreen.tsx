@@ -50,6 +50,8 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [panelFocus, setPanelFocus] = useState<PanelFocus | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
+  const closingRef = useRef(false);
 
   const draftRef = useRef(draft);
   const titleRef = useRef(title);
@@ -137,15 +139,28 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
     }
     const current = getCurrentWindow();
     const unlisten = current.onCloseRequested(async (event) => {
+      if (closingRef.current) {
+        return;
+      }
       if (autosave.hasUnpersistedChanges()) {
         event.preventDefault();
         setExitBlock("window");
+        return;
       }
+      event.preventDefault();
+      try {
+        await api.closeWork();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      closingRef.current = true;
+      await current.destroy();
     });
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, [autosave]);
+  }, [api, autosave]);
 
   const requestLeave = (kind: "library" | "window") => {
     if (autosave.hasUnpersistedChanges()) {
@@ -221,6 +236,27 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           }}
         >
           改名
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void (async () => {
+              try {
+                await autosave.saveNow();
+                if (autosave.hasUnpersistedChanges()) {
+                  setExitBlock("library");
+                  return;
+                }
+                const point = await api.createRestorePoint();
+                setRestoreNote(`已创建恢复点 ${point.folderName}`);
+                setError(null);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              }
+            })();
+          }}
+        >
+          创建恢复点
         </button>
         {initial.fts5 ? null : <span className="error">FTS5 不可用</span>}
       </header>
@@ -456,6 +492,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           {composing ? "组字中，不落盘" : "组字结束才自动保存"}
         </span>
         {lastPersistedAt ? <span className="muted">上次落盘 {lastPersistedAt}</span> : null}
+        {restoreNote ? <span className="muted">{restoreNote}</span> : null}
         {import.meta.env.DEV ? (
           <button
             type="button"
@@ -504,6 +541,8 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
                       await api.closeWork();
                       onBackToLibrary();
                     } else if (kind === "window" && isTauri()) {
+                      await api.closeWork();
+                      closingRef.current = true;
                       await getCurrentWindow().destroy();
                     }
                   }

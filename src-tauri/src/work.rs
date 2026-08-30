@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::backup::backup_connection;
+use crate::backup::{backup_connection, create_restore_point};
 use crate::error::{AppError, AppResult};
 use crate::prefs::{folder_name_from_work_name, unique_folder_name};
 use crate::schema::{
@@ -15,7 +15,7 @@ use crate::schema::{
 use crate::setting::SettingCatalogDto;
 
 pub const RECYCLE_DIR: &str = "作品库回收区";
-pub const RESTORE_SUFFIX: &str = ".恢复点";
+pub use crate::backup::{restore_points_dir, RestoreKind, RestorePoint, RESTORE_SUFFIX};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +155,7 @@ impl WorkPackage {
         package.set_session_value("cursor_from", "1")?;
         package.set_session_value("cursor_to", "1")?;
         package.set_session_value("scroll_top", "0")?;
+        package.ensure_daily_restore_point()?;
         Ok(package)
     }
 
@@ -162,12 +163,29 @@ impl WorkPackage {
         let manifest = read_manifest(path)?;
         let conn = Connection::open(path.join("work.sqlite"))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        if !crate::backup::is_inside_restore_points_dir(path)
+            && crate::schema::needs_schema_migration(&conn)?
+        {
+            create_restore_point(path, &conn, RestoreKind::Migration)?;
+        }
         ensure_schema(&conn)?;
-        Ok(Self {
+        let package = Self {
             path: path.to_path_buf(),
             manifest,
             conn,
-        })
+        };
+        if !crate::backup::is_inside_restore_points_dir(path) {
+            package.ensure_daily_restore_point()?;
+        }
+        Ok(package)
+    }
+
+    pub fn ensure_daily_restore_point(&self) -> AppResult<Option<RestorePoint>> {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        if crate::backup::has_restore_point_on_local_date(&self.path, &today)? {
+            return Ok(None);
+        }
+        Ok(Some(self.create_restore_point(RestoreKind::Auto)?))
     }
 
     pub fn summary(&self, recycled: bool) -> WorkSummary {
@@ -462,6 +480,10 @@ impl WorkPackage {
         backup_connection(&self.conn, dest)
     }
 
+    pub fn create_restore_point(&self, kind: RestoreKind) -> AppResult<RestorePoint> {
+        create_restore_point(&self.path, &self.conn, kind)
+    }
+
     fn placement(
         &self,
         has_volumes: bool,
@@ -549,17 +571,6 @@ pub fn write_manifest(path: &Path, manifest: &WorkManifest) -> AppResult<()> {
 
 pub fn is_work_package(path: &Path) -> bool {
     path.join("work.json").is_file() && path.join("work.sqlite").is_file()
-}
-
-pub fn restore_points_dir(work_dir: &Path) -> PathBuf {
-    let name = work_dir
-        .file_name()
-        .map(|name| format!("{}{RESTORE_SUFFIX}", name.to_string_lossy()))
-        .unwrap_or_else(|| format!("work{RESTORE_SUFFIX}"));
-    work_dir
-        .parent()
-        .map(|parent| parent.join(name))
-        .unwrap_or_else(|| work_dir.join(RESTORE_SUFFIX))
 }
 
 fn existing_folder_names(library: &Path) -> AppResult<Vec<String>> {
@@ -682,5 +693,164 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
             .unwrap();
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn restore_point_appears_beside_the_work_package() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+        assert!(point.path.is_dir());
+        assert!(point.path.join("work.json").is_file());
+        assert!(point.path.join("work.sqlite").is_file());
+        assert!(point.path.join("assets").is_dir());
+        let parent = point.path.parent().unwrap();
+        assert_eq!(parent, restore_points_dir(&work.path));
+        assert_eq!(parent.parent().unwrap(), work.path.parent().unwrap());
+        assert!(!work.path.join("北境行纪.恢复点").exists());
+    }
+
+    #[test]
+    fn restore_point_keeps_body_structure_settings_links_and_recycle() {
+        use crate::link::{CreateAssociationPayload, LinkRefDto};
+
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let first = work.opened().unwrap().chapter.unwrap();
+        work.rename_chapter(&first.id, "开篇").unwrap();
+        work.create_volume("上卷").unwrap();
+        let extra = work
+            .create_chapter(&CreateChapterOptions {
+                after_chapter_id: None,
+                selected_volume_id: None,
+            })
+            .unwrap()
+            .1;
+        work.delete_chapter(&extra.id).unwrap();
+        let body = serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "风过北境" }]
+            }]
+        });
+        work.save_chapter(&SaveChapterPayload {
+            id: first.id.clone(),
+            title: "开篇".into(),
+            body,
+            cursor_from: 1,
+            cursor_to: 1,
+            scroll_top: 0.0,
+        })
+        .unwrap();
+        let mut character = work.create_character().unwrap();
+        character.name = "林北".into();
+        work.save_character(&character).unwrap();
+        work.create_association(&CreateAssociationPayload {
+            left: LinkRefDto {
+                kind: "chapter".into(),
+                id: first.id.clone(),
+            },
+            right: LinkRefDto {
+                kind: "character".into(),
+                id: character.id.clone(),
+            },
+            note: "同乡".into(),
+        })
+        .unwrap();
+        fs::write(work.path.join("assets").join("map.png"), b"fake-image").unwrap();
+
+        let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+        let nested = point
+            .path
+            .file_name()
+            .map(|name| format!("{}{RESTORE_SUFFIX}", name.to_string_lossy()))
+            .unwrap();
+        assert!(!point.path.join(nested).exists());
+        assert!(!point.path.join(format!("北境行纪{RESTORE_SUFFIX}")).exists());
+        assert_eq!(
+            fs::read(point.path.join("assets").join("map.png")).unwrap(),
+            b"fake-image"
+        );
+
+        let restored = WorkPackage::open(&point.path).unwrap();
+        let opened = restored.opened().unwrap();
+        assert_eq!(opened.outline.volumes[0].title, "上卷");
+        assert_eq!(opened.chapter.as_ref().unwrap().title, "开篇");
+        assert!(extract_plain_text(&opened.chapter.unwrap().body).contains("风过北境"));
+        assert_eq!(opened.catalog.characters[0].name, "林北");
+        assert_eq!(restored.list_associations("chapter", &first.id).unwrap().len(), 1);
+        assert!(restored
+            .list_recycle()
+            .unwrap()
+            .iter()
+            .any(|item| item.id == extra.id && item.kind == "chapter"));
+    }
+
+    #[test]
+    fn hot_copy_of_an_open_work_sqlite_is_rejected() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let dest = dir.path().join("hot-copy.sqlite");
+        let err = crate::backup::copy_sqlite_file(&work.path.join("work.sqlite"), &dest).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("Backup API") || message.contains("VACUUM INTO"),
+            "{message}"
+        );
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn schema_migration_creates_a_restore_point_first() {
+        use crate::schema::{ensure_schema, initialize_work_db, USER_VERSION};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("旧作");
+        fs::create_dir_all(path.join("assets")).unwrap();
+        write_manifest(
+            &path,
+            &WorkManifest {
+                id: "old".into(),
+                name: "旧作".into(),
+                created_at: "2020-01-01T00:00:00+08:00".into(),
+                updated_at: "2020-01-01T00:00:00+08:00".into(),
+            },
+        )
+        .unwrap();
+        let conn = Connection::open(path.join("work.sqlite")).unwrap();
+        initialize_work_db(&conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE IF EXISTS setting_entries;
+             DROP TABLE IF EXISTS storyline_events;
+             DROP TABLE IF EXISTS storylines;
+             DROP TABLE IF EXISTS events;
+             DROP TABLE IF EXISTS locations;
+             DROP TABLE IF EXISTS characters;
+             DROP TABLE IF EXISTS setting_categories;
+             DROP TABLE IF EXISTS associations;
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        drop(conn);
+
+        let opened = WorkPackage::open(&path).unwrap();
+        let points = crate::backup::list_restore_points(&path).unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].kind, RestoreKind::Migration);
+        let snapshot = Connection::open(points[0].path.join("work.sqlite")).unwrap();
+        let version: i32 = snapshot
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        let live: i32 = opened
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(live, USER_VERSION);
+        assert!(ensure_schema(&opened.conn).unwrap());
+        assert_eq!(opened.catalog().unwrap().categories[0].name, "未分类");
     }
 }

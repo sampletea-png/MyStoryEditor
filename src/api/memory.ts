@@ -41,7 +41,7 @@ import {
 import { containsQuery, snippetAround } from "../domain/workSearch";
 import { EMPTY_DOCUMENT } from "../editor/schema";
 import { countDocumentWords, extractPlainText, type TipTapNode } from "../domain/wordCount";
-import type { AppApi, ChapterBody, OpenedWork, Session, WorkSummary } from "./types";
+import type { AppApi, ChapterBody, OpenedWork, RestoreKind, RestorePoint, Session, WorkSummary } from "./types";
 
 type StoredChapter = Chapter & {
   body: TipTapNode;
@@ -74,6 +74,7 @@ type StoredWork = {
   storylines: Map<string, Soft<Storyline>>;
   settings: Map<string, Soft<SettingEntry>>;
   associations: Soft<Association>[];
+  restorePoints: RestorePoint[];
 };
 
 function createId() {
@@ -168,7 +169,76 @@ function emptyWorkFields() {
     storylines: new Map<string, Soft<Storyline>>(),
     settings: new Map<string, Soft<SettingEntry>>(),
     associations: [] as Soft<Association>[],
+    restorePoints: [] as RestorePoint[],
   };
+}
+
+function restorePointsDir(work: StoredWork): string {
+  const parent = work.summary.path.replace(/[/\\][^/\\]+$/, "");
+  return `${parent}/${work.summary.folderName}.恢复点`;
+}
+
+function restoreKindLabel(kind: RestoreKind): string {
+  switch (kind) {
+    case "manual":
+      return "手动";
+    case "auto":
+      return "自动";
+    case "migration":
+      return "迁移";
+  }
+}
+
+function nextRestoreFolderName(work: StoredWork, kind: RestoreKind): string {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-")
+    + "_"
+    + [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((part) => String(part).padStart(2, "0"))
+      .join("");
+  const base = `${stamp}-${restoreKindLabel(kind)}`;
+  const used = new Set(work.restorePoints.map((item) => item.folderName.toLowerCase()));
+  if (!used.has(base.toLowerCase())) {
+    return base;
+  }
+  let n = 2;
+  while (used.has(`${base}-${n}`.toLowerCase())) {
+    n += 1;
+  }
+  return `${base}-${n}`;
+}
+
+function todayStamp(): string {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function addRestorePoint(work: StoredWork, kind: RestoreKind): RestorePoint {
+  const folderName = nextRestoreFolderName(work, kind);
+  const point: RestorePoint = {
+    path: `${restorePointsDir(work)}/${folderName}`,
+    folderName,
+    createdAt: new Date().toISOString(),
+    kind,
+  };
+  work.restorePoints.push(point);
+  return point;
+}
+
+function ensureDailyRestorePoint(work: StoredWork): RestorePoint | null {
+  const today = todayStamp();
+  if (work.restorePoints.some((item) => item.folderName.startsWith(today))) {
+    return null;
+  }
+  return addRestorePoint(work, "auto");
 }
 
 function displayRecycleName(kind: RecycleKind, name: string): string {
@@ -351,6 +421,7 @@ export function createMemoryApi(): AppApi {
       };
       works.set(work.summary.id, work);
       openId = work.summary.id;
+      ensureDailyRestorePoint(work);
       return opened(work);
     },
     async renameWork(id, name) {
@@ -390,9 +461,16 @@ export function createMemoryApi(): AppApi {
         throw new Error("找不到这部作品");
       }
       openId = id;
+      ensureDailyRestorePoint(work);
       return opened(work);
     },
     async closeWork() {
+      if (openId) {
+        const work = works.get(openId);
+        if (work) {
+          addRestorePoint(work, "auto");
+        }
+      }
       openId = null;
     },
     async createVolume(title) {
@@ -1016,6 +1094,12 @@ export function createMemoryApi(): AppApi {
         throw new Error("找不到这条关联");
       }
       item.deletedAt = nowTs();
+    },
+    async createRestorePoint() {
+      return addRestorePoint(requireOpen(), "manual");
+    },
+    async listRestorePoints() {
+      return requireOpen().restorePoints.map((item) => ({ ...item }));
     },
   };
 }
