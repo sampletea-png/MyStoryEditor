@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "skills": {
+    "ask-matt": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "41134b4aa1dc9b751be0c181fff38a8ba027ac91adc76f90876e6f5acffcf2eb"
+    },
+    "code-review": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "b4f17857c85ca60af1df7d0b623dd03c2a48419f6123e714f3d9748ca744a1bf"
+    },
+    "codebase-design": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "caea3cb8a8281ff829fd1a2b985044e77601b62f301adf43f689ccfc74c15f6f"
+    },
+    "diagnosing-bugs": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "dcaaa3eb81195329f65f27574d9a67dc776160dd2e4d7798d1afb1e4a5f3695a"
+    },
+    "domain-modeling": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "336547f3ff285e822fc70b69b170dc58bceef9c8ed5fad18de0046287d6be837"
+    },
+    "grill-me": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "711d1b4d131f1bd9032caec6d07f17ba690fe19b7c25379dee14d31bd012dd0b"
+    },
+    "grill-with-docs": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "1c48a9f45e5e5751c37ecb396c9b22b55ed6c3b2200b7205dbe9e65c2fd4464a"
+    },
+    "grilling": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "4fa026e5979770347b3357ff5139e1e41d21c3a9f7335e9cd2811cb5b8d32f2f"
+    },
+    "handoff": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "dc5e36c42dd77faac5c5e2d6992ac8fcb8fadd49bde516e3f6196ffca9df05ac"
+    },
+    "implement": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "130cac2d72bfde8cd526bf3b754211e2fe00e84bc4d9f9c56f749b9541a3afad"
+    },
+    "improve-codebase-architecture": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "f4f97f351be491d1626481950f8ec31fae6b822948a66aa21862c25ee77d9cf6"
+    },
+    "prototype": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "62979fe039ef64407b258f8824db41b9185f788638747df803032df4153c2aae"
+    },
+    "research": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "2c8b768d5f0309eaea9f92ef740101e813645b39aef88fb82733a52eae23dc0b"
+    },
+    "resolving-merge-conflicts": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "436698459190d8e9f03dc32ada08401b56e352fb6a19bf71a2227fad8b80d98f"
+    },
+    "setup-matt-pocock-skills": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "632e62d1439087ba38f5488b533ec46df8c43f39c5f4b57a81353a724661cead"
+    },
+    "tdd": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "9d933d8788906178ab7581f7c203bdecf76f877b4abb8e5661b528538e496f23"
+    },
+    "teach": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "d5f74fa9a34961cf4df339019f7cd1ebf84163cf8b789829be26342e5ceba5a1"
+    },
+    "to-questionnaire": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "e2cb00bfeb4243f1384bf7e106185ccb69fd7d45ff6a3b04bec4102f505aba31"
+    },
+    "to-spec": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "0ee8caf20fc7df94db53e76f42588fb01eee88c6f8dc97e7a3a0565be8978e74"
+    },
+    "to-tickets": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "4aba8639f46b55ede011866f83e9e87ae10482b72c14848389e5801eba0b37bf"
+    },
+    "triage": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "a649965d297ad718524ad3ec43d186b6be359c6932228c6647dbb6045149a670"
+    },
+    "wait-what": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "179a857fabd08c894e8e5b30baa7488147760ee1d58696ebd24bd4f6ead21699"
+    },
+    "wayfinder": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "77f1a3cac3c3860d98f302b6ed1e3c65a11c3231b558a38983b24f283bb80026"
+    },
+    "wizard": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "6b98bd36db34eb5584d937b745e6e68a317afa0807a426fe8717ab196242ae70"
+    },
+    "writing-for-agents": {
+      "source": "../Matt_Skill_mulit_version",
+      "sourceType": "local",
+      "computedHash": "831e996c177c6c5233eb3bb472a33edee2b3ce1ee5a6d7e8b696c1c3fb4eda3d"
+    }
+  }
+}
