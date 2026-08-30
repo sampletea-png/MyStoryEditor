@@ -45,7 +45,12 @@ import {
 } from "../domain/workMap";
 import { EMPTY_DOCUMENT } from "../editor/schema";
 import { countDocumentWords, extractPlainText, type TipTapNode } from "../domain/wordCount";
+import { browserDownloadFiles, runBodyExport, type ExportFileHost } from "./exportFiles";
 import type { AppApi, ChapterBody, OpenedWork, RestoreKind, RestorePoint, Session, WorkMapImage, WorkSummary } from "./types";
+
+export type MemoryApiOptions = {
+  exportFiles?: ExportFileHost;
+};
 
 type StoredChapter = Chapter & {
   body: TipTapNode;
@@ -352,8 +357,8 @@ function createMemoryShared(): MemoryShared {
   };
 }
 
-export function createMemoryApi(): AppApi {
-  return bindMemoryApi(createMemoryShared());
+export function createMemoryApi(options: MemoryApiOptions = {}): AppApi {
+  return bindMemoryApi(createMemoryShared(), options);
 }
 
 export function createMemoryApiPair(): [AppApi, AppApi] {
@@ -361,7 +366,7 @@ export function createMemoryApiPair(): [AppApi, AppApi] {
   return [bindMemoryApi(shared), bindMemoryApi(shared)];
 }
 
-function bindMemoryApi(shared: MemoryShared): AppApi {
+function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): AppApi {
   const holder = Symbol();
   const defaultLibraryPath = "文档/小说作品库";
   const works = shared.works;
@@ -1232,7 +1237,7 @@ function bindMemoryApi(shared: MemoryShared): AppApi {
         snapshot.name,
         new Set([...works.values()].map((work) => work.summary.folderName.toLowerCase())),
       );
-      const work = workFromSnapshot(snapshot, folderName, libraryPath ?? defaultLibraryPath);
+      const work = workFromSnapshot(snapshot, folderName, shared.libraryPath ?? defaultLibraryPath);
       works.set(work.summary.id, work);
       openId = work.summary.id;
       return opened(work);
@@ -1258,6 +1263,23 @@ function bindMemoryApi(shared: MemoryShared): AppApi {
     },
     async listRestorePoints() {
       return requireOpen().restorePoints.map((item) => ({ ...item }));
+    },
+    async exportBody(request) {
+      const work = requireOpen();
+      const files = options.exportFiles ?? browserDownloadFiles();
+      const chapters = liveChapters(work).map((chapter) => ({
+        id: chapter.id,
+        body: structuredClone(chapter.body),
+      }));
+      return runBodyExport(
+        {
+          workName: work.summary.name,
+          outline: structuredClone(work.outline),
+          chapters,
+          request,
+        },
+        files,
+      );
     },
   };
 }

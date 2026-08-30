@@ -1,3 +1,5 @@
+import type { BodyExportFormat } from "../domain/exportBody";
+import type { BodyExportRequest, BodyExportResult } from "./exportFiles";
 import type { ChapterStatus, Outline } from "../domain/outline";
 import type { Association, LinkRef } from "../domain/association";
 import type {
@@ -174,4 +176,7 @@ export type AppApi = {
   clearWorkMap: () => Promise<void>;
   createRestorePoint: () => Promise<RestorePoint>;
   listRestorePoints: () => Promise<RestorePoint[]>;
+  exportBody: (request: BodyExportRequest) => Promise<BodyExportResult>;
 };
+
+export type { BodyExportFormat, BodyExportRequest, BodyExportResult };

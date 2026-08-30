@@ -8,6 +8,7 @@ mod setting;
 mod work;
 
 use std::fs;
+use std::path::Path;
 use std::sync::Mutex;
 
 use error::{AppError, AppResult};
@@ -26,8 +27,8 @@ use setting::{
 };
 use backup::{RestoreKind, RestorePoint};
 use work::{
-    CreateChapterOptions, OpenedWorkDto, OutlineDto, PutWorkMapPayload, SaveChapterPayload, WorkMapDto,
-    WorkPackage, WorkSummary,
+    BodyExportSourceDto, CreateChapterOptions, OpenedWorkDto, OutlineDto, PutWorkMapPayload,
+    SaveChapterPayload, WorkMapDto, WorkPackage, WorkSummary,
 };
 
 pub struct AppState {
@@ -472,6 +473,21 @@ fn clear_work_map(state: State<AppState>) -> Result<(), String> {
     with_open(&state, |work| work.clear_work_map()).map_err(String::from)
 }
 
+#[tauri::command]
+fn body_export_source(state: State<AppState>) -> Result<BodyExportSourceDto, String> {
+    with_open(&state, |work| work.body_export_source()).map_err(String::from)
+}
+
+#[tauri::command]
+fn export_path_exists(path: String) -> bool {
+    Path::new(&path).exists()
+}
+
+#[tauri::command]
+fn write_export_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    fs::write(path, bytes).map_err(|err| err.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -556,7 +572,10 @@ pub fn run() {
             put_work_map,
             clear_work_map,
             create_restore_point,
-            list_restore_points
+            list_restore_points,
+            body_export_source,
+            export_path_exists,
+            write_export_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
