@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
-import { exportManuscript } from "./exportManuscript";
+import { exportBody } from "./exportBody";
 import type { Outline } from "./outline";
 import type { TipTapNode } from "./wordCount";
 
@@ -65,9 +65,9 @@ function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-describe("exportManuscript", () => {
+describe("exportBody", () => {
   it("writes UTF-8 BOM plain text with titles, no marks, and no 定稿", async () => {
-    const bytes = await exportManuscript({ outline, chapters, format: "plain" });
+    const bytes = await exportBody({ outline, chapters, format: "plain" });
     expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     expect(decodeUtf8(bytes.subarray(3))).toBe(
       "上卷\n\n第一章\n\n你好 世界\n\n删掉\n\n下卷\n\n第二章\n\n只留文字\n",
@@ -75,15 +75,15 @@ describe("exportManuscript", () => {
   });
 
   it("writes UTF-8 Markdown with heading titles and mark syntax, without BOM or 定稿", async () => {
-    const bytes = await exportManuscript({ outline, chapters, format: "markdown" });
+    const bytes = await exportBody({ outline, chapters, format: "markdown" });
     expect([...bytes.subarray(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
     expect(decodeUtf8(bytes)).toBe(
       "# 上卷\n\n## 第一章\n\n**你好** *世界*\n\n---\n\n~~删掉~~\n\n# 下卷\n\n## 第二章\n\n只留文字\n",
     );
   });
 
-  it("writes a real DOCX with Chinese headings and bold italic strike", async () => {
-    const bytes = await exportManuscript({ outline, chapters, format: "docx" });
+  it("writes a real DOCX with Chinese headings, bold italic strike, and 分隔线", async () => {
+    const bytes = await exportBody({ outline, chapters, format: "docx" });
     expect([...bytes.subarray(0, 2)]).toEqual([0x50, 0x4b]);
     const zip = await JSZip.loadAsync(bytes);
     const types = await zip.file("[Content_Types].xml")?.async("string");
@@ -104,10 +104,11 @@ describe("exportManuscript", () => {
     expect(xml).toMatch(/<w:b[\s/>]/);
     expect(xml).toMatch(/<w:i[\s/>]/);
     expect(xml).toMatch(/<w:strike[\s/>]/);
+    expect(xml).toMatch(/<w:pBdr>[\s\S]*?<w:bottom\b/);
   });
 
   it("uses 未命名卷 and 未命名章节 for blank titles", async () => {
-    const bytes = await exportManuscript({
+    const bytes = await exportBody({
       outline: {
         volumes: [{ id: "v1", title: "  ", sortOrder: 0 }],
         chapters: [chapter("c1", "", 0, "v1")],
@@ -121,7 +122,7 @@ describe("exportManuscript", () => {
   });
 
   it("exports a work without volumes as chapter titles only", async () => {
-    const bytes = await exportManuscript({
+    const bytes = await exportBody({
       outline: {
         volumes: [],
         chapters: [chapter("c1", "第一章", 0, null)],

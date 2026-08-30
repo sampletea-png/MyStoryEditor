@@ -13,17 +13,17 @@ import {
 } from "./outline";
 import { extractPlainText, type TipTapMark, type TipTapNode } from "./wordCount";
 
-export type ManuscriptFormat = "plain" | "markdown" | "docx";
+export type BodyExportFormat = "plain" | "markdown" | "docx";
 
 export type ChapterDocument = {
   id: string;
   body: TipTapNode;
 };
 
-export type ExportManuscriptInput = {
+export type ExportBodyInput = {
   outline: Outline;
   chapters: readonly ChapterDocument[];
-  format: ManuscriptFormat;
+  format: BodyExportFormat;
 };
 
 const UTF8_BOM = new Uint8Array([0xef, 0xbb, 0xbf]);
@@ -33,9 +33,7 @@ type Block =
   | { kind: "paragraph"; node: TipTapNode }
   | { kind: "rule" };
 
-export async function exportManuscript(
-  input: ExportManuscriptInput,
-): Promise<Uint8Array> {
+export async function exportBody(input: ExportBodyInput): Promise<Uint8Array> {
   const blocks = collectBlocks(input.outline, input.chapters);
   if (input.format === "plain") {
     return withUtf8Bom(renderPlain(blocks));
