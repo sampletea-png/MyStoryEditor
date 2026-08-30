@@ -28,7 +28,9 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
         if !is_work_package(&path) {
             continue;
         }
-        let manifest = read_manifest(&path)?;
+        let Ok(manifest) = read_manifest(&path) else {
+            continue;
+        };
         packages.push((path, manifest));
     }
     packages.sort_by(|a, b| a.0.cmp(&b.0));
