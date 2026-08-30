@@ -179,3 +179,59 @@ describe("associations and search through AppApi", () => {
     expect(result.wordCount).toBe(11);
   });
 });
+
+describe("作品归档 through AppApi", () => {
+  it("imports an archive as a new work that can sit beside a same-named original", async () => {
+    const api = createMemoryApi();
+    await api.setLibraryPath("文档/小说作品库");
+    const original = await api.createWork("北境行纪");
+    const chapterId = original.chapter!.id;
+    await api.createVolume("上卷");
+    await api.saveChapter({
+      id: chapterId,
+      title: "出关",
+      body: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "雪停之后他才出关" }] }],
+      },
+      cursorFrom: 1,
+      cursorTo: 1,
+      scrollTop: 0,
+    });
+    const character = await api.createCharacter();
+    await api.saveCharacter({ ...character, name: "阿宁", summary: "守关人" });
+    await api.createAssociation({
+      left: { kind: "chapter", id: chapterId },
+      right: { kind: "character", id: character.id },
+      note: "同乡",
+    });
+    const city = await api.createLocation();
+    await api.saveLocation({ ...city, name: "北城" });
+    await api.deleteLocation(city.id);
+
+    const archive = await api.exportWorkArchive(original.work.id);
+    const imported = await api.importWorkArchive(archive);
+
+    expect(imported.work.id).not.toBe(original.work.id);
+    expect(imported.work.name).toBe("北境行纪");
+    expect(imported.outline.volumes.map((volume) => volume.title)).toEqual(["上卷"]);
+    expect(imported.outline.chapters[0]?.title).toBe("出关");
+    expect(imported.chapter?.title).toBe("出关");
+    expect(imported.catalog.characters[0]?.name).toBe("阿宁");
+    expect(imported.catalog.locations.some((item) => item.id === city.id)).toBe(false);
+    const links = await api.listAssociations("chapter", chapterId);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.note).toBe("同乡");
+    const recycle = await api.listWorkRecycle();
+    expect(recycle.some((item) => item.id === city.id && item.kind === "location")).toBe(true);
+
+    const listed = await api.listWorks();
+    expect(listed.filter((work) => work.name === "北境行纪")).toHaveLength(2);
+    expect(new Set(listed.map((work) => work.id)).size).toBe(2);
+
+    const stillOriginal = await api.openWork(original.work.id);
+    expect(stillOriginal.work.id).toBe(original.work.id);
+    expect(stillOriginal.chapter?.title).toBe("出关");
+    expect(stillOriginal.catalog.characters[0]?.name).toBe("阿宁");
+  });
+});

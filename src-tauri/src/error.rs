@@ -10,6 +10,8 @@ pub enum AppError {
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Zip(#[from] zip::result::ZipError),
 }
 
 impl Serialize for AppError {

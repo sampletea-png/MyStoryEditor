@@ -462,6 +462,91 @@ impl WorkPackage {
         backup_connection(&self.conn, dest)
     }
 
+    pub fn export_archive(&self) -> AppResult<Vec<u8>> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("work.json", options)?;
+            zip.write_all(&fs::read(self.path.join("work.json"))?)?;
+
+            let tmp = std::env::temp_dir().join(format!("storyarchive-{}.sqlite", Uuid::new_v4()));
+            self.backup_to(&tmp)?;
+            zip.start_file("work.sqlite", options)?;
+            zip.write_all(&fs::read(&tmp)?)?;
+            let _ = fs::remove_file(&tmp);
+
+            add_dir_to_zip(&mut zip, &self.path.join("assets"), "assets", options)?;
+            zip.finish()?;
+        }
+        Ok(cursor.into_inner())
+    }
+
+    pub fn import_archive(library: &Path, bytes: &[u8]) -> AppResult<Self> {
+        use std::io::{Cursor, Read};
+
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
+        let names: Vec<String> = {
+            let mut names = Vec::new();
+            for i in 0..zip.len() {
+                names.push(zip.by_index(i)?.name().replace('\\', "/"));
+            }
+            names
+        };
+        if !names.iter().any(|name| name == "work.json") {
+            return Err(AppError::Message("归档缺少 work.json".into()));
+        }
+        if !names.iter().any(|name| name == "work.sqlite") {
+            return Err(AppError::Message("归档缺少 work.sqlite".into()));
+        }
+
+        let mut manifest: WorkManifest = {
+            let mut file = zip.by_name("work.json")?;
+            let mut text = String::new();
+            file.read_to_string(&mut text)?;
+            serde_json::from_str(&text)?
+        };
+        manifest.id = Uuid::new_v4().to_string();
+
+        fs::create_dir_all(library)?;
+        let existing = existing_folder_names(library)?;
+        let folder = unique_folder_name(&manifest.name, &existing);
+        let dest = library.join(&folder);
+        fs::create_dir_all(dest.join("assets"))?;
+
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i)?;
+            let name = file.name().replace('\\', "/");
+            if name.contains("..") || name.contains("恢复点") || name == "work.json" {
+                continue;
+            }
+            let dest_path = if name == "work.sqlite" {
+                dest.join("work.sqlite")
+            } else if let Some(rest) = name.strip_prefix("assets/") {
+                if rest.is_empty() {
+                    continue;
+                }
+                dest.join("assets").join(rest)
+            } else {
+                continue;
+            };
+            if file.is_dir() {
+                fs::create_dir_all(&dest_path)?;
+                continue;
+            }
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut out = fs::File::create(&dest_path)?;
+            std::io::copy(&mut file, &mut out)?;
+        }
+        write_manifest(&dest, &manifest)?;
+        Self::open(&dest)
+    }
+
     fn placement(
         &self,
         has_volumes: bool,
@@ -560,6 +645,35 @@ pub fn restore_points_dir(work_dir: &Path) -> PathBuf {
         .parent()
         .map(|parent| parent.join(name))
         .unwrap_or_else(|| work_dir.join(RESTORE_SUFFIX))
+}
+
+fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    dir: &Path,
+    prefix: &str,
+    options: zip::write::SimpleFileOptions,
+) -> AppResult<()> {
+    use std::io::Write;
+
+    zip.add_directory(format!("{prefix}/"), options)?;
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let rel = format!("{prefix}/{}", name.to_string_lossy());
+        if name.to_string_lossy().contains("恢复点") {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            add_dir_to_zip(zip, &entry.path(), &rel, options)?;
+        } else {
+            zip.start_file(&rel, options)?;
+            zip.write_all(&fs::read(entry.path())?)?;
+        }
+    }
+    Ok(())
 }
 
 fn existing_folder_names(library: &Path) -> AppResult<Vec<String>> {
@@ -682,5 +796,106 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
             .unwrap();
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn storyarchive_is_zip_without_restore_points_and_imports_as_new_identity() {
+        use crate::library;
+        use crate::link::{CreateAssociationPayload, LinkRefDto};
+        use crate::setting::LocationDto;
+        use std::io::Cursor;
+        use zip::ZipArchive;
+
+        let source_lib = tempdir().unwrap();
+        let work = WorkPackage::create(source_lib.path(), "北境行纪").unwrap();
+        let chapter = work.opened().unwrap().chapter.unwrap();
+        work.create_volume("上卷").unwrap();
+        work.save_chapter(&SaveChapterPayload {
+            id: chapter.id.clone(),
+            title: "出关".into(),
+            body: serde_json::json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "雪停之后他才出关" }]
+                }]
+            }),
+            cursor_from: 1,
+            cursor_to: 1,
+            scroll_top: 0.0,
+        })
+        .unwrap();
+        let character = work.create_character().unwrap();
+        work.save_character(&crate::setting::CharacterDto {
+            id: character.id.clone(),
+            name: "阿宁".into(),
+            aliases: vec![],
+            summary: "守关人".into(),
+            appearance: serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}),
+            personality: serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}),
+            background: serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}),
+        })
+        .unwrap();
+        work.create_association(&CreateAssociationPayload {
+            left: LinkRefDto {
+                kind: "chapter".into(),
+                id: chapter.id.clone(),
+            },
+            right: LinkRefDto {
+                kind: "character".into(),
+                id: character.id.clone(),
+            },
+            note: "同乡".into(),
+        })
+        .unwrap();
+        let city = work.create_location(None).unwrap();
+        work.save_location(&LocationDto {
+            id: city.id.clone(),
+            name: "北城".into(),
+            summary: String::new(),
+            description: serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}),
+            parent_id: None,
+        })
+        .unwrap();
+        work.delete_location(&city.id).unwrap();
+        fs::write(work.path.join("assets").join("cover.txt"), "封面").unwrap();
+        let restore = restore_points_dir(&work.path);
+        fs::create_dir_all(&restore).unwrap();
+        fs::write(restore.join("should-not-export"), "恢复点").unwrap();
+
+        let original_id = work.manifest.id.clone();
+        let archive = work.export_archive().unwrap();
+        let mut zip = ZipArchive::new(Cursor::new(&archive)).unwrap();
+        let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
+        assert!(names.iter().any(|name| name == "work.json"));
+        assert!(names.iter().any(|name| name == "work.sqlite"));
+        assert!(names.iter().any(|name| name == "assets/cover.txt" || name == "assets\\cover.txt"));
+        assert!(names.iter().all(|name| !name.contains("恢复点") && !name.contains("should-not-export")));
+
+        let dest_lib = tempdir().unwrap();
+        WorkPackage::create(dest_lib.path(), "北境行纪").unwrap();
+        let imported = WorkPackage::import_archive(dest_lib.path(), &archive).unwrap();
+        assert_ne!(imported.manifest.id, original_id);
+        assert_eq!(imported.manifest.name, "北境行纪");
+        let opened = imported.opened().unwrap();
+        assert_eq!(opened.outline.volumes[0].title, "上卷");
+        assert_eq!(opened.chapter.as_ref().unwrap().title, "出关");
+        assert!(extract_plain_text(&opened.chapter.as_ref().unwrap().body).contains("雪停之后他才出关"));
+        assert_eq!(opened.catalog.characters[0].name, "阿宁");
+        assert!(opened.catalog.locations.iter().all(|item| item.id != city.id));
+        let links = imported.list_associations("chapter", &chapter.id).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].note, "同乡");
+        assert!(imported
+            .list_recycle()
+            .unwrap()
+            .iter()
+            .any(|item| item.id == city.id && item.kind == "location"));
+        let listed = library::list_works(dest_lib.path(), false).unwrap();
+        assert_eq!(listed.iter().filter(|item| item.name == "北境行纪").count(), 2);
+        assert_eq!(
+            listed.iter().map(|item| item.id.as_str()).collect::<std::collections::HashSet<_>>().len(),
+            2
+        );
     }
 }

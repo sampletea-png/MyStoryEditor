@@ -99,6 +99,31 @@ fn create_work(state: State<AppState>, name: String) -> Result<OpenedWorkDto, St
 }
 
 #[tauri::command]
+fn export_work_archive(state: State<AppState>, id: String) -> Result<Vec<u8>, String> {
+    {
+        let open = state.open.lock().expect("open work lock");
+        if let Some(work) = open.as_ref() {
+            if work.manifest.id == id {
+                return work.export_archive().map_err(String::from);
+            }
+        }
+    }
+    let library = library_path(&state)?;
+    let path = find_work_dir(&library, &id, false).map_err(String::from)?;
+    let package = WorkPackage::open(&path).map_err(String::from)?;
+    package.export_archive().map_err(String::from)
+}
+
+#[tauri::command]
+fn import_work_archive(state: State<AppState>, archive: Vec<u8>) -> Result<OpenedWorkDto, String> {
+    let library = library_path(&state)?;
+    let package = WorkPackage::import_archive(&library, &archive).map_err(String::from)?;
+    let opened = package.opened().map_err(String::from)?;
+    *state.open.lock().expect("open work lock") = Some(package);
+    Ok(opened)
+}
+
+#[tauri::command]
 fn rename_work(state: State<AppState>, id: String, name: String) -> Result<(), String> {
     if let Some(open) = state.open.lock().expect("open work lock").as_mut() {
         if open.manifest.id == id {
@@ -437,6 +462,8 @@ pub fn run() {
             list_works,
             list_recycled_works,
             create_work,
+            export_work_archive,
+            import_work_archive,
             rename_work,
             delete_work,
             restore_work,

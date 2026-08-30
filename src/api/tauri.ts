@@ -24,6 +24,11 @@ export function createTauriApi(): AppApi {
     listWorks: () => invoke("list_works"),
     listRecycledWorks: () => invoke("list_recycled_works"),
     createWork: (name) => invoke("create_work", { name }),
+    exportWorkArchive: async (id) => {
+      const bytes = await invoke<number[]>("export_work_archive", { id });
+      return new Uint8Array(bytes);
+    },
+    importWorkArchive: (archive) => invoke("import_work_archive", { archive: Array.from(archive) }),
     renameWork: (id, name) => invoke("rename_work", { id, name }),
     deleteWork: (id) => invoke("delete_work", { id }),
     restoreWork: (id) => invoke("restore_work", { id }),

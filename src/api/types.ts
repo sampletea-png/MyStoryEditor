@@ -152,4 +152,6 @@ export type AppApi = {
   }) => Promise<Association>;
   updateAssociationNote: (id: string, note: string) => Promise<void>;
   deleteAssociation: (id: string) => Promise<void>;
+  exportWorkArchive: (id: string) => Promise<Uint8Array>;
+  importWorkArchive: (archive: Uint8Array) => Promise<OpenedWork>;
 };
