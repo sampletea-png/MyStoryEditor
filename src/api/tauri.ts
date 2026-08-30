@@ -83,6 +83,9 @@ export function createTauriApi(): AppApi {
     createAssociation: (payload) => invoke("create_association", { payload }),
     updateAssociationNote: (id, note) => invoke("update_association_note", { id, note }),
     deleteAssociation: (id) => invoke("delete_association", { id }),
+    getWorkMap: () => invoke("get_work_map"),
+    putWorkMap: (payload) => invoke("put_work_map", { payload }),
+    clearWorkMap: () => invoke("clear_work_map"),
   };
 }
 

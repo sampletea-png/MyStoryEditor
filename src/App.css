@@ -408,6 +408,58 @@ button.active {
   margin: 0.15rem 0;
 }
 
+.work-map-dialog {
+  min-width: min(720px, 92vw);
+  max-width: 92vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.work-map-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.work-map-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.work-map-stage {
+  min-height: 240px;
+  max-height: 64vh;
+  display: grid;
+  place-items: center;
+  background: #e8d7bf;
+  border: 1px solid #c9b8a0;
+  overflow: hidden;
+}
+
+.work-map-stage img {
+  max-width: 100%;
+  max-height: 64vh;
+  object-fit: contain;
+}
+
+.file-button {
+  display: inline-flex;
+  align-items: center;
+  background: #fff8ee;
+  border: 1px solid #c9b8a0;
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.file-button input {
+  display: none;
+}
+
 .row.wrap {
   flex-wrap: wrap;
 }

@@ -25,7 +25,8 @@ use setting::{
     SettingCategoryDto, SettingEntryDto, StorylineDto,
 };
 use work::{
-    CreateChapterOptions, OpenedWorkDto, OutlineDto, SaveChapterPayload, WorkPackage, WorkSummary,
+    CreateChapterOptions, OpenedWorkDto, OutlineDto, PutWorkMapPayload, SaveChapterPayload, WorkMapDto,
+    WorkPackage, WorkSummary,
 };
 
 pub struct AppState {
@@ -441,6 +442,21 @@ fn delete_association(state: State<AppState>, id: String) -> Result<(), String> 
     with_open(&state, |work| work.delete_association(&id)).map_err(String::from)
 }
 
+#[tauri::command]
+fn get_work_map(state: State<AppState>) -> Result<Option<WorkMapDto>, String> {
+    with_open(&state, |work| work.load_work_map()).map_err(String::from)
+}
+
+#[tauri::command]
+fn put_work_map(state: State<AppState>, payload: PutWorkMapPayload) -> Result<WorkMapDto, String> {
+    with_open(&state, |work| work.put_work_map(&payload.file_name, &payload.bytes)).map_err(String::from)
+}
+
+#[tauri::command]
+fn clear_work_map(state: State<AppState>) -> Result<(), String> {
+    with_open(&state, |work| work.clear_work_map()).map_err(String::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -520,7 +536,10 @@ pub fn run() {
             list_associations,
             create_association,
             update_association_note,
-            delete_association
+            delete_association,
+            get_work_map,
+            put_work_map,
+            clear_work_map
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
