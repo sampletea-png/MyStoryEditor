@@ -1,15 +1,19 @@
-# 我的小说编辑器
+# 小说编辑器
 
-这是一个用于开发个人小说编辑器的工作区。
+个人 Windows 桌面小说编辑器。显示名：**小说编辑器**。技术栈为 Tauri 2 + React + TypeScript + Tiptap MIT 核心 + 每作品 SQLite。
 
-## 项目目标
+## 开发
 
-构建一款面向个人创作者的小说编辑工具，为小说的创作、整理和维护提供便捷的工作环境。
+需要 Node.js 与 Rust（MSVC）。日常开发在 `develop` 分支。
 
-## 当前状态
+```bash
+npm install
+npm test
+npm run tauri dev
+```
 
-项目处于初始化阶段，功能规划和技术方案将在后续开发过程中逐步完善。
+前端也可单独跑 `npm run dev`，用内存作品库在浏览器里验证编辑器与中文组字。
 
-## 开发分支
+## 阶段 1
 
-日常开发工作在 `develop` 分支进行。
+作品库、数据包、卷章、Tiptap、约 3 秒自动保存、字数、保存失败拦截、进程单实例。规格见 `docs/mvp-spec.md`，路线见 `docs/roadmap.md`。

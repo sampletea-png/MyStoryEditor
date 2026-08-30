@@ -1,0 +1,262 @@
+:root {
+  color: #2a241c;
+  background: #f6f1e7;
+  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  background: #fff8ee;
+  border: 1px solid #c9b8a0;
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+button.primary,
+button[type="submit"] {
+  background: #6b4f32;
+  color: #fff8ee;
+  border-color: #6b4f32;
+}
+
+button.active {
+  background: #e8d7bf;
+}
+
+.muted {
+  color: #7a6d5d;
+}
+
+.error {
+  color: #9a2b2b;
+}
+
+.setup-screen,
+.library-screen {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem;
+}
+
+.setup-screen label,
+.create-work {
+  display: flex;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.setup-screen input,
+.create-work input,
+.library-screen input,
+.chapter-title {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #c9b8a0;
+  border-radius: 4px;
+  background: #fffdf8;
+}
+
+.row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.work-list {
+  list-style: none;
+  padding: 0;
+}
+
+.work-list li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #e4d8c6;
+}
+
+.work-open {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.writing-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.writing-top,
+.status-bar,
+.tree-head,
+.chapter-meta,
+.editor-toolbar {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  background: #efe6d6;
+  border-bottom: 1px solid #d8cbb6;
+}
+
+.status-bar {
+  border-top: 1px solid #d8cbb6;
+  border-bottom: 0;
+  font-size: 0.9rem;
+}
+
+.writing-body {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 220px;
+  min-height: 0;
+  flex: 1;
+}
+
+.outline-tree.collapsed {
+  width: 48px;
+}
+
+.outline-tree,
+.side-panel {
+  background: #f3eadc;
+  border-right: 1px solid #d8cbb6;
+  overflow: auto;
+}
+
+.side-panel {
+  border-right: 0;
+  border-left: 1px solid #d8cbb6;
+  padding: 0.75rem;
+}
+
+.tree-list {
+  padding: 0.4rem 0.5rem 1rem;
+}
+
+.tree-item {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  margin: 0.15rem 0;
+}
+
+.tree-item.chapter {
+  padding-left: 0.6rem;
+}
+
+.tree-item.selected {
+  background: #e8d7bf;
+  border-radius: 4px;
+}
+
+.tree-item input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 0.15rem 0.3rem;
+}
+
+.tree-open {
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.editor-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #fffdf8;
+}
+
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.editor-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 1.5rem 8%;
+}
+
+.chapter-title {
+  font-size: 1.25rem;
+}
+
+.chapter-editor {
+  outline: none;
+  min-height: 60vh;
+}
+
+.chapter-editor p {
+  text-indent: 2em;
+  margin: 0 0 0.9em;
+}
+
+.chapter-editor hr {
+  border: 0;
+  border-top: 1px solid #c9b8a0;
+  margin: 1.5em 0;
+}
+
+.empty-chapter {
+  margin: auto;
+  color: #7a6d5d;
+}
+
+.composing {
+  color: #6b4f32;
+  font-weight: 600;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(42, 36, 28, 0.35);
+  display: grid;
+  place-items: center;
+}
+
+.dialog {
+  background: #fffdf8;
+  padding: 1.25rem 1.5rem;
+  border-radius: 8px;
+  min-width: 280px;
+}
+
+@media (max-width: 1100px) {
+  .writing-body {
+    grid-template-columns: 200px minmax(0, 1fr) 0fr;
+  }
+
+  .side-panel {
+    display: none;
+  }
+}
