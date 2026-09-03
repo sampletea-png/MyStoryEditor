@@ -21,6 +21,7 @@ export type WorkSummary = {
   folderName: string;
   path: string;
   recycled: boolean;
+  problem: string | null;
 };
 
 export type Session = {

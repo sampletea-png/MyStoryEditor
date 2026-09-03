@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::backup::{backup_connection, create_restore_point};
+use crate::backup::backup_connection;
 use crate::error::{AppError, AppResult};
 use crate::prefs::{folder_name_from_work_name, unique_folder_name};
 use crate::schema::{
@@ -26,6 +26,15 @@ pub struct WorkManifest {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_state: Option<DatabaseState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DatabaseState {
+    Clean,
+    Unclean,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +45,7 @@ pub struct WorkSummary {
     pub folder_name: String,
     pub path: String,
     pub recycled: bool,
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +163,19 @@ pub struct WorkPackage {
     _lock: File,
 }
 
+impl Drop for WorkPackage {
+    fn drop(&mut self) {
+        if std::thread::panicking() || checkpoint_for_clean_close(&self.conn).is_err() {
+            return;
+        }
+        let mut clean_manifest = self.manifest.clone();
+        clean_manifest.database_state = Some(DatabaseState::Clean);
+        if write_manifest(&self.path, &clean_manifest).is_ok() {
+            self.manifest = clean_manifest;
+        }
+    }
+}
+
 impl WorkPackage {
     pub fn create(library: &Path, name: &str) -> AppResult<Self> {
         if name.trim().is_empty() {
@@ -169,6 +192,7 @@ impl WorkPackage {
             name: name.trim().to_string(),
             created_at: now.clone(),
             updated_at: now,
+            database_state: Some(DatabaseState::Unclean),
         };
         write_manifest(&path, &manifest)?;
         let conn = Connection::open(path.join("work.sqlite"))?;
@@ -199,15 +223,17 @@ impl WorkPackage {
     }
 
     pub fn open(path: &Path) -> AppResult<Self> {
-        let manifest = read_manifest(path).map_err(|_| corrupt_package())?;
+        let mut manifest = read_manifest(path).map_err(|_| corrupt_package())?;
         let lock = acquire_package_lock(path)?;
-        reject_unreadable_package(path)?;
+        reject_unreadable_package(path, manifest.database_state)?;
+        manifest.database_state = Some(DatabaseState::Unclean);
+        write_manifest(path, &manifest)?;
         let conn = Connection::open(path.join("work.sqlite"))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         if !crate::backup::is_inside_restore_points_dir(path)
             && crate::schema::needs_schema_migration(&conn)?
         {
-            create_restore_point(path, &conn, RestoreKind::Migration)?;
+            create_clean_restore_point(path, &conn, RestoreKind::Migration)?;
         }
         ensure_schema(&conn)?;
         let package = Self {
@@ -241,6 +267,7 @@ impl WorkPackage {
                 .unwrap_or_default(),
             path: self.path.to_string_lossy().into_owned(),
             recycled,
+            problem: None,
         }
     }
 
@@ -547,7 +574,7 @@ impl WorkPackage {
     }
 
     pub fn create_restore_point(&self, kind: RestoreKind) -> AppResult<RestorePoint> {
-        create_restore_point(&self.path, &self.conn, kind)
+        create_clean_restore_point(&self.path, &self.conn, kind)
     }
 
     pub fn list_restore_points(&self) -> AppResult<Vec<RestorePoint>> {
@@ -562,8 +589,10 @@ impl WorkPackage {
         {
             let mut zip = zip::ZipWriter::new(&mut cursor);
             let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let mut archive_manifest = self.manifest.clone();
+            archive_manifest.database_state = Some(DatabaseState::Clean);
             zip.start_file("work.json", options)?;
-            zip.write_all(&fs::read(self.path.join("work.json"))?)?;
+            zip.write_all(serde_json::to_string_pretty(&archive_manifest)?.as_bytes())?;
 
             let tmp = std::env::temp_dir().join(format!("storyarchive-{}.sqlite", Uuid::new_v4()));
             self.backup_to(&tmp)?;
@@ -776,6 +805,26 @@ fn corrupt_package() -> AppError {
     AppError::Message(CORRUPT_PACKAGE.into())
 }
 
+fn checkpoint_for_clean_close(conn: &Connection) -> AppResult<()> {
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    if busy != 0 {
+        return Err(AppError::Message("作品数据包仍有未完成的 SQLite 检查点".into()));
+    }
+    Ok(())
+}
+
+fn create_clean_restore_point(
+    work_dir: &Path,
+    conn: &Connection,
+    kind: RestoreKind,
+) -> AppResult<RestorePoint> {
+    let point = crate::backup::create_restore_point(work_dir, conn, kind)?;
+    let mut snapshot_manifest = read_manifest(&point.path)?;
+    snapshot_manifest.database_state = Some(DatabaseState::Clean);
+    write_manifest(&point.path, &snapshot_manifest)?;
+    Ok(point)
+}
+
 fn sqlite_sidecar(sqlite: &Path, suffix: &str) -> PathBuf {
     let mut name = sqlite.as_os_str().to_os_string();
     name.push(suffix);
@@ -788,7 +837,7 @@ fn sqlite_immutable_uri(sqlite: &Path) -> String {
     format!("file:{encoded}?mode=ro&immutable=1")
 }
 
-fn reject_unreadable_package(path: &Path) -> AppResult<()> {
+fn reject_unreadable_package(path: &Path, database_state: Option<DatabaseState>) -> AppResult<()> {
     let sqlite = path.join("work.sqlite");
     let meta = fs::metadata(&sqlite).map_err(|_| corrupt_package())?;
     if !meta.is_file() || meta.len() < 100 {
@@ -796,6 +845,9 @@ fn reject_unreadable_package(path: &Path) -> AppResult<()> {
     }
     let wal = sqlite_sidecar(&sqlite, "-wal");
     let shm = sqlite_sidecar(&sqlite, "-shm");
+    if database_state == Some(DatabaseState::Unclean) && !wal.is_file() {
+        return Err(corrupt_package());
+    }
     if shm.is_file() && !wal.is_file() {
         return Err(corrupt_package());
     }
@@ -1026,6 +1078,29 @@ mod tests {
         assert_eq!(opened.session.scroll_top, 12.0);
         let text = extract_plain_text(&opened.chapter.unwrap().body);
         assert!(text.contains("还能看见"));
+    }
+
+    #[test]
+    fn old_manifest_without_database_state_reopens() {
+        let dir = tempdir().unwrap();
+        let created = WorkPackage::create(dir.path(), "旧作").unwrap();
+        let path = created.path.clone();
+        drop(created);
+
+        let manifest_path = path.join("work.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .remove("databaseState");
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        let sqlite = path.join("work.sqlite");
+        let _ = fs::remove_file(sqlite_sidecar(&sqlite, "-wal"));
+        let _ = fs::remove_file(sqlite_sidecar(&sqlite, "-shm"));
+
+        let reopened = WorkPackage::open(&path).expect("legacy manifest must remain compatible");
+        assert_eq!(reopened.manifest.name, "旧作");
     }
 
     #[test]
@@ -1547,6 +1622,7 @@ mod tests {
                 name: "旧作".into(),
                 created_at: "2020-01-01T00:00:00+08:00".into(),
                 updated_at: "2020-01-01T00:00:00+08:00".into(),
+                database_state: None,
             },
         )
         .unwrap();
@@ -1707,6 +1783,48 @@ mod tests {
     }
 
     #[test]
+    fn checkpointed_copy_missing_both_sidecars_is_rejected_without_writeback() {
+        let dir = tempdir().unwrap();
+        let source = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        source
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        source
+            .create_chapter(&CreateChapterOptions {
+                after_chapter_id: None,
+                selected_volume_id: None,
+            })
+            .unwrap();
+        let source_sqlite = source.path.join("work.sqlite");
+        assert!(sqlite_sidecar(&source_sqlite, "-wal").is_file());
+
+        let dest = dir.path().join("缺少两个旁路文件的拷贝");
+        fs::create_dir_all(dest.join("assets")).unwrap();
+        fs::copy(source.path.join("work.json"), dest.join("work.json")).unwrap();
+        fs::copy(&source_sqlite, dest.join("work.sqlite")).unwrap();
+        let restore = restore_points_dir(&dest);
+        fs::create_dir_all(&restore).unwrap();
+        fs::write(restore.join("keep-me"), "已有恢复点").unwrap();
+        let restore_before = snapshot_tree(&restore);
+        let sqlite_before = fs::read(dest.join("work.sqlite")).unwrap();
+        let json_before = fs::read(dest.join("work.json")).unwrap();
+
+        let err = WorkPackage::open(&dest)
+            .err()
+            .expect("copy that omitted committed WAL content must be rejected");
+        assert_rejected_without_writeback(
+            &dest,
+            &restore,
+            &sqlite_before,
+            &json_before,
+            &restore_before,
+            err,
+        );
+        drop(source);
+    }
+
+    #[test]
     fn unreadable_work_json_is_rejected_without_writeback() {
         let dir = tempdir().unwrap();
         let created = WorkPackage::create(dir.path(), "北境行纪").unwrap();
@@ -1738,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn listing_skips_unreadable_work_json_without_writing() {
+    fn listing_exposes_unreadable_work_json_without_writing() {
         use crate::library;
 
         let dir = tempdir().unwrap();
@@ -1752,8 +1870,20 @@ mod tests {
         let json_before = fs::read(bad_path.join("work.json")).unwrap();
 
         let listed = library::list_works(dir.path(), false).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, good_id);
+        assert_eq!(listed.len(), 2);
+        assert!(listed
+            .iter()
+            .any(|work| work.id == good_id && work.problem.is_none()));
+        let damaged = listed
+            .iter()
+            .find(|work| work.problem.as_deref() == Some(CORRUPT_PACKAGE))
+            .expect("the damaged package must remain visible");
+        assert_eq!(damaged.folder_name, "坏包");
+        let found = library::find_work_dir(dir.path(), &damaged.id, false).unwrap();
+        let err = WorkPackage::open(&found)
+            .err()
+            .expect("damaged entry must not open");
+        assert!(err.to_string().contains("损坏"));
         assert_eq!(fs::read(bad_path.join("work.json")).unwrap(), json_before);
         assert!(bad_path.is_dir());
     }

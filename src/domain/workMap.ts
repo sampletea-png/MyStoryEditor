@@ -1,3 +1,5 @@
+import type { LocationMark } from "./setting";
+
 export type MapImageKind = "jpeg" | "png" | "webp";
 
 const KIND_BY_EXT: Record<string, MapImageKind> = {
@@ -40,7 +42,7 @@ export function mapImageMimeType(kind: MapImageKind): "image/jpeg" | "image/png"
   }
 }
 
-export type MapPoint = {
+export type ContainerPoint = {
   x: number;
   y: number;
 };
@@ -50,7 +52,7 @@ export type MapSize = {
   height: number;
 };
 
-export type MapRect = MapPoint & MapSize;
+export type MapRect = ContainerPoint & MapSize;
 
 export function containFittedRect(container: MapSize, image: MapSize): MapRect {
   if (container.width <= 0 || container.height <= 0 || image.width <= 0 || image.height <= 0) {
@@ -67,7 +69,10 @@ export function containFittedRect(container: MapSize, image: MapSize): MapRect {
   };
 }
 
-export function imagePointFromContainer(pointer: MapPoint, fitted: MapRect): MapPoint | null {
+export function imagePointFromContainer(
+  pointer: ContainerPoint,
+  fitted: MapRect,
+): LocationMark | null {
   if (fitted.width <= 0 || fitted.height <= 0) {
     return null;
   }
@@ -79,7 +84,7 @@ export function imagePointFromContainer(pointer: MapPoint, fitted: MapRect): Map
   return { x, y };
 }
 
-export function containerPointFromImage(mark: MapPoint, fitted: MapRect): MapPoint {
+export function containerPointFromImage(mark: LocationMark, fitted: MapRect): ContainerPoint {
   return {
     x: fitted.x + mark.x * fitted.width,
     y: fitted.y + mark.y * fitted.height,

@@ -226,6 +226,7 @@ function workFromSnapshot(snapshot: WorkArchiveSnapshot, folderName: string, lib
       folderName,
       path: `${library}/${folderName}`,
       recycled: false,
+      problem: null,
     },
     outline: structuredClone(snapshot.outline),
     chapters,
@@ -520,6 +521,7 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
           folderName,
           path: `${shared.libraryPath ?? defaultLibraryPath}/${folderName}`,
           recycled: false,
+          problem: null,
         },
         outline: {
           volumes: [],

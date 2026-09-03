@@ -114,16 +114,19 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
                   >
                     <strong>{work.name}</strong>
                     <span className="muted">{work.folderName}</span>
+                    {work.problem ? <span className="error">{work.problem}</span> : null}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRenameId(work.id);
-                      setRenameValue(work.name);
-                    }}
-                  >
-                    改名
-                  </button>
+                  {work.problem ? null : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRenameId(work.id);
+                        setRenameValue(work.name);
+                      }}
+                    >
+                      改名
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={async () => {
@@ -148,6 +151,7 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
               <div>
                 <strong>{work.name}</strong>
                 <span className="muted">{work.folderName}</span>
+                {work.problem ? <span className="error">{work.problem}</span> : null}
               </div>
               <button
                 type="button"

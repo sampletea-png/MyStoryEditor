@@ -1055,6 +1055,7 @@ mod tests {
                 name: "旧作".into(),
                 created_at: "2020-01-01T00:00:00+08:00".into(),
                 updated_at: "2020-01-01T00:00:00+08:00".into(),
+                database_state: None,
             },
         )
         .unwrap();

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppApi, WorkMapImage } from "../api/types";
-import type { Location, SettingCatalog } from "../domain/setting";
+import type { Location, LocationMark, SettingCatalog } from "../domain/setting";
 import { displaySettingName } from "../domain/settingNames";
 import {
   containFittedRect,
   containerPointFromImage,
   imagePointFromContainer,
   mapImageKindFromFileName,
-  type MapPoint,
+  type ContainerPoint,
   type MapSize,
 } from "../domain/workMap";
 
@@ -25,7 +25,10 @@ function objectUrlFor(map: WorkMapImage): string {
   return URL.createObjectURL(new Blob([bytes], { type: map.mimeType }));
 }
 
-function pointerIn(element: HTMLElement, event: { clientX: number; clientY: number }): MapPoint {
+function pointerIn(
+  element: HTMLElement,
+  event: { clientX: number; clientY: number },
+): ContainerPoint {
   const rect = element.getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
@@ -45,8 +48,8 @@ export function WorkMapOverlay({
   const [imageSize, setImageSize] = useState<MapSize | null>(null);
   const [stageSize, setStageSize] = useState<MapSize>({ width: 0, height: 0 });
   const [placingId, setPlacingId] = useState<string | null>(null);
-  const [draftMarks, setDraftMarks] = useState<Record<string, MapPoint>>({});
-  const draftMarksRef = useRef<Record<string, MapPoint>>({});
+  const [draftMarks, setDraftMarks] = useState<Record<string, LocationMark>>({});
+  const draftMarksRef = useRef<Record<string, LocationMark>>({});
   const dragIdRef = useRef<string | null>(null);
   const draggedRef = useRef(false);
 
@@ -98,10 +101,10 @@ export function WorkMapOverlay({
     [imageSize, stageSize],
   );
 
-  const markOf = (location: Location): MapPoint | null =>
+  const markOf = (location: Location): LocationMark | null =>
     draftMarks[location.id] ?? location.mark;
 
-  const persistMark = async (location: Location, point: MapPoint) => {
+  const persistMark = async (location: Location, point: LocationMark) => {
     try {
       const next = await api.saveLocation({ ...location, mark: point });
       setError(null);

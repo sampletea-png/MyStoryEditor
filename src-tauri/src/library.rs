@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::work::{
     is_work_package, package_lock_path, read_manifest, restore_points_dir, write_manifest,
-    WorkManifest, WorkPackage, WorkSummary, RECYCLE_DIR, RESTORE_SUFFIX,
+    WorkManifest, WorkPackage, WorkSummary, CORRUPT_PACKAGE, RECYCLE_DIR, RESTORE_SUFFIX,
 };
 
 pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>> {
@@ -19,6 +19,7 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
         return Ok(Vec::new());
     }
     let mut packages = Vec::new();
+    let mut damaged = Vec::new();
     for entry in fs::read_dir(&root)? {
         let entry = entry?;
         let path = entry.path();
@@ -29,6 +30,18 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
             continue;
         }
         let Ok(manifest) = read_manifest(&path) else {
+            let folder_name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            damaged.push(WorkSummary {
+                id: format!("damaged:{}", path.to_string_lossy()),
+                name: "损坏的作品数据包".into(),
+                folder_name,
+                path: path.to_string_lossy().into_owned(),
+                recycled,
+                problem: Some(CORRUPT_PACKAGE.into()),
+            });
             continue;
         };
         packages.push((path, manifest));
@@ -37,7 +50,7 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
     if !recycled {
         assign_unique_identities(&mut packages)?;
     }
-    Ok(packages
+    let mut summaries: Vec<_> = packages
         .into_iter()
         .map(|(path, manifest)| WorkSummary {
             id: manifest.id,
@@ -48,8 +61,12 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
                 .unwrap_or_default(),
             path: path.to_string_lossy().into_owned(),
             recycled,
+            problem: None,
         })
-        .collect())
+        .collect();
+    summaries.extend(damaged);
+    summaries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(summaries)
 }
 
 fn assign_unique_identities(packages: &mut [(PathBuf, WorkManifest)]) -> AppResult<()> {
