@@ -73,10 +73,13 @@ impl WorkPackage {
     }
 
     pub fn list_associations(&self, kind: &str, id: &str) -> AppResult<Vec<AssociationDto>> {
+        // Existing rowids record insertion order; UUIDs and location order do not.
+        // Storyline routes use the earliest associated location, including after reopen.
         let mut stmt = self.conn.prepare(
             "SELECT id, left_kind, left_id, right_kind, right_id, note FROM associations
              WHERE deleted_at IS NULL
-               AND ((left_kind = ?1 AND left_id = ?2) OR (right_kind = ?1 AND right_id = ?2))",
+               AND ((left_kind = ?1 AND left_id = ?2) OR (right_kind = ?1 AND right_id = ?2))
+             ORDER BY rowid ASC",
         )?;
         let rows = stmt.query_map(params![kind, id], |row| {
             Ok(AssociationDto {
@@ -425,6 +428,39 @@ mod tests {
         assert!(by_summary.settings.iter().any(|item| item.id == character.id));
         let by_phrase = work.search_work("他才出关").unwrap();
         assert!(by_phrase.chapters.iter().any(|item| item.id == chapter.id));
+    }
+
+    #[test]
+    fn event_locations_keep_earliest_association_first_after_reopen() {
+        let (_dir, work) = work();
+        let event = work.create_event().unwrap();
+        // Location creation order is deliberately different from association order.
+        let later = work.create_location(None).unwrap();
+        let earliest = work.create_location(None).unwrap();
+        let first = work.create_association(&CreateAssociationPayload {
+            left: LinkRefDto { kind: "event".into(), id: event.id.clone() },
+            right: LinkRefDto { kind: "location".into(), id: earliest.id.clone() },
+            note: String::new(),
+        }).unwrap();
+        work.create_association(&CreateAssociationPayload {
+            left: LinkRefDto { kind: "location".into(), id: later.id.clone() },
+            right: LinkRefDto { kind: "event".into(), id: event.id.clone() },
+            note: String::new(),
+        }).unwrap();
+        work.update_association_note(&first.id, "改说明不改最先关联地点").unwrap();
+        let path = work.path.clone();
+        drop(work);
+        let reopened = WorkPackage::open(&path).unwrap();
+
+        for reverse in [false, true] {
+            // SQLite's diagnostic setting exposes accidental reliance on unordered
+            // scans. All writes and assertions still use the WorkPackage seam.
+            reopened.conn.pragma_update(None, "reverse_unordered_selects", reverse).unwrap();
+            let links = reopened.list_associations("event", &event.id).unwrap();
+            let location_ids: Vec<_> = links.iter().map(|link| link.left.id.as_str()).collect();
+            assert_eq!(location_ids, vec![earliest.id.as_str(), later.id.as_str()]);
+            assert_eq!(reopened.list_associations("location", &earliest.id).unwrap()[0].id, first.id);
+        }
     }
 
     #[test]

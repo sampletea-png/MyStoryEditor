@@ -446,12 +446,14 @@ button.active {
 }
 
 .work-map-dialog {
+  width: min(1100px, 92vw);
   min-width: min(720px, 92vw);
   max-width: 92vw;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  overflow: auto;
 }
 
 .work-map-head {
@@ -479,8 +481,8 @@ button.active {
   display: grid;
   place-items: center;
   width: 100%;
-  height: 64vh;
-  min-height: 240px;
+  height: clamp(200px, 46vh, 560px);
+  min-height: 200px;
   background: #e8d7bf;
   border: 1px solid #c9b8a0;
   overflow: hidden;
@@ -523,6 +525,87 @@ button.active {
   width: 12rem;
   min-height: 0;
   overflow: auto;
+}
+
+.work-map-unmarked select {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+}
+
+.work-map-unlocated {
+  margin: 1rem 0;
+}
+
+.work-map-unlocated ol {
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.work-map-route {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.work-map-route polyline {
+  fill: none;
+  stroke: #a04b2c;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.work-map-route-number {
+  position: absolute;
+  z-index: 2;
+  transform: translateX(-50%);
+  border: 1px solid #fff8ee;
+  border-radius: 0.5rem;
+  padding: 0.1rem 0.35rem;
+  background: #873b20;
+  color: white;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+.work-map-chain h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+}
+
+.work-map-chain ol {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0 0 0.4rem;
+  list-style: none;
+  overflow-x: auto;
+  max-height: 8rem;
+}
+
+.work-map-chain li {
+  flex: 0 0 10rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #c9b8a0;
+  border-radius: 4px;
+  background: #fff8ee;
+  overflow-wrap: anywhere;
+}
+
+.work-map-chain small {
+  display: block;
+  margin-top: 0.25rem;
+  color: #6b4f32;
+}
+
+@media (max-width: 650px) {
+  .work-map-body { grid-template-columns: minmax(0, 1fr); }
+  .work-map-unmarked { width: auto; max-height: 10rem; }
 }
 
 .work-map-unmarked h3 {

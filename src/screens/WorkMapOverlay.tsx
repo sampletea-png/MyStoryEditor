@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppApi, WorkMapImage } from "../api/types";
-import type { Location, LocationMark, SettingCatalog } from "../domain/setting";
+import type { Association } from "../domain/association";
+import { deriveStorylineRoute } from "../domain/storyline";
+import type { Location, LocationMark, SettingCatalog, Storyline } from "../domain/setting";
 import { displaySettingName } from "../domain/settingNames";
 import {
   containFittedRect,
@@ -52,6 +54,39 @@ export function WorkMapOverlay({
   const draftMarksRef = useRef<Record<string, LocationMark>>({});
   const dragIdRef = useRef<string | null>(null);
   const draggedRef = useRef(false);
+  const [storylineId, setStorylineId] = useState(catalog.storylines[0]?.id ?? "");
+  const storyline = catalog.storylines.find((item) => item.id === storylineId) ?? catalog.storylines[0];
+  const [associationLoad, setAssociationLoad] = useState<{
+    storyline: Storyline;
+    byEvent: Record<string, Association[]>;
+    error: string | null;
+  } | null>(null);
+  const [retry, setRetry] = useState(0);
+  const loaded = associationLoad?.storyline === storyline ? associationLoad : null;
+
+  useEffect(() => {
+    if (!storyline) {
+      return;
+    }
+    let cancelled = false;
+    setAssociationLoad(null);
+    void Promise.all(
+      storyline.eventIds.map(async (id) => [id, await api.listAssociations("event", id)] as const),
+    )
+      .then((entries) => {
+        if (!cancelled) {
+          setAssociationLoad({ storyline, byEvent: Object.fromEntries(entries), error: null });
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setAssociationLoad({ storyline, byEvent: {}, error: err instanceof Error ? err.message : String(err) });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, storyline, retry]);
 
   useEffect(() => {
     if (srcRef.current) {
@@ -103,6 +138,16 @@ export function WorkMapOverlay({
 
   const markOf = (location: Location): LocationMark | null =>
     draftMarks[location.id] ?? location.mark;
+
+  const route = deriveStorylineRoute(
+    storyline ?? { eventIds: [] },
+    catalog.events,
+    catalog.locations.map((location) => ({ ...location, mark: map ? markOf(location) : null })),
+    loaded?.byEvent ?? {},
+  );
+  const routePoints = fitted && loaded && !loaded.error
+    ? route.stops.map((stop) => ({ ...stop, point: containerPointFromImage(stop.mark, fitted) }))
+    : [];
 
   const persistMark = async (location: Location, point: LocationMark) => {
     try {
@@ -160,6 +205,31 @@ export function WorkMapOverlay({
             ) : (
               <p className="muted">还没有底图。放入一张 png、jpg 或 webp。</p>
             )}
+            {src && fitted && routePoints.length > 0 ? (
+              <>
+                <svg className="work-map-route" role="img" aria-label="事件走线">
+                  {routePoints.length > 1 ? (
+                    <polyline points={routePoints.map(({ point }) => `${point.x},${point.y}`).join(" ")} />
+                  ) : null}
+                </svg>
+                {route.markers.map((marker) => {
+                  const point = containerPointFromImage(marker.mark, fitted);
+                  return (
+                    <span
+                      key={marker.visits[0].eventId}
+                      className="work-map-route-number"
+                      style={{
+                        left: `clamp(2rem, ${point.x}px, calc(100% - 2rem))`,
+                        top: `clamp(2px, ${point.y + 14}px, calc(100% - 1.75rem))`,
+                      }}
+                      title={marker.visits.map((visit) => `${visit.inclusionNumber}. ${displaySettingName("event", visit.eventName)}`).join("；")}
+                    >
+                      {marker.visits.map((visit) => visit.inclusionNumber).join("、")}
+                    </span>
+                  );
+                })}
+              </>
+            ) : null}
             {src && fitted
               ? marked.map((location) => {
                   const mark = markOf(location);
@@ -224,8 +294,31 @@ export function WorkMapOverlay({
                 })
               : null}
           </div>
-          {map ? (
-            <aside className="work-map-unmarked">
+          <aside className="work-map-unmarked">
+              <label>
+                故事线
+                <select aria-label="故事线" value={storyline?.id ?? ""} onChange={(event) => setStorylineId(event.target.value)}>
+                  {catalog.storylines.length === 0 ? <option value="">还没有故事线</option> : null}
+                  {catalog.storylines.map((item) => (
+                    <option key={item.id} value={item.id}>{displaySettingName("storyline", item.name)}</option>
+                  ))}
+                </select>
+              </label>
+              {storyline ? (
+                <section className="work-map-unlocated">
+                  <h3>未定点事件</h3>
+                  {!loaded ? <p role="status">正在读取事件关联…</p> : loaded.error ? (
+                    <p role="alert">事件关联读取失败：{loaded.error} <button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button></p>
+                  ) : route.unlocated.length > 0 ? (
+                    <ol aria-label="未定点事件">
+                      {route.unlocated.map((item) => (
+                        <li key={item.eventId}>{item.inclusionNumber}. {displaySettingName("event", item.eventName)}</li>
+                      ))}
+                    </ol>
+                  ) : <p className="muted">没有未定点事件。</p>}
+                </section>
+              ) : null}
+              {map ? <>
               <h3>未定点地点</h3>
               {catalog.locations.length === 0 ? (
                 <p className="muted">还没有地点。</p>
@@ -247,9 +340,24 @@ export function WorkMapOverlay({
                 </ul>
               )}
               {placingId ? <p className="muted">在图上单击为选中地点打上标记。</p> : null}
-            </aside>
-          ) : null}
+              </> : null}
+          </aside>
         </div>
+        <section className="work-map-chain">
+          <h3>事件链</h3>
+          {!storyline ? <p className="muted">还没有故事线。</p> : route.chain.length === 0 ? (
+            <p className="muted">这条故事线还没有收录事件。</p>
+          ) : (
+            <ol aria-label="事件链">
+              {route.chain.map((item) => (
+                <li key={item.eventId}>
+                  <span>{item.inclusionNumber}. {displaySettingName("event", item.eventName)}</span>
+                  <small>{!loaded ? "正在读取关联…" : loaded.error ? "关联读取失败" : item.mark ? displaySettingName("location", item.locationName ?? "") : "未定点"}</small>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
         <div className="row">
           <label className="file-button">
             {map ? "替换底图" : "放入底图"}
