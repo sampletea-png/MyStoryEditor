@@ -116,8 +116,15 @@ impl WorkPackage {
         }
         let (left, right) = canonical(left, right);
         if let Some(existing) = self.find_pair(&left, &right)? {
+            // Explicitly re-linking an unlinked pair is a new inclusion position.
+            // Keep its public identity; live duplicates and recycle restoration
+            // retain their original position. This single update is atomic.
             self.conn.execute(
-                "UPDATE associations SET deleted_at = NULL, note = ?1 WHERE id = ?2",
+                "UPDATE associations
+                 SET rowid = CASE WHEN deleted_at IS NOT NULL
+                     THEN (SELECT MAX(rowid) + 1 FROM associations) ELSE rowid END,
+                     deleted_at = NULL, note = ?1
+                 WHERE id = ?2",
                 params![payload.note, existing.id],
             )?;
             return Ok(AssociationDto {
@@ -461,6 +468,66 @@ mod tests {
             assert_eq!(location_ids, vec![earliest.id.as_str(), later.id.as_str()]);
             assert_eq!(reopened.list_associations("location", &earliest.id).unwrap()[0].id, first.id);
         }
+    }
+
+    #[test]
+    fn explicit_relink_moves_location_to_end_without_changing_association_identity() {
+        let (_dir, work) = work();
+        let event = work.create_event().unwrap();
+        let a = work.create_location(None).unwrap();
+        let b = work.create_location(None).unwrap();
+        let payload = |location_id: &str| CreateAssociationPayload {
+            left: LinkRefDto { kind: "event".into(), id: event.id.clone() },
+            right: LinkRefDto { kind: "location".into(), id: location_id.into() },
+            note: "关联说明".into(),
+        };
+        let first = work.create_association(&payload(&a.id)).unwrap();
+        let second = work.create_association(&payload(&b.id)).unwrap();
+        work.delete_association(&first.id).unwrap();
+        let relinked = work.create_association(&payload(&a.id)).unwrap();
+        assert_eq!(relinked.id, first.id);
+        assert_eq!(relinked.left.id, a.id);
+        assert_eq!(relinked.right.id, event.id);
+        assert_eq!(relinked.note, "关联说明");
+        // Repeating an already-live association is not a new explicit re-link.
+        work.create_association(&payload(&b.id)).unwrap();
+        let path = work.path.clone();
+        drop(work);
+        let reopened = WorkPackage::open(&path).unwrap();
+        let links = reopened.list_associations("event", &event.id).unwrap();
+        assert_eq!(links.iter().map(|link| link.id.as_str()).collect::<Vec<_>>(),
+            vec![second.id.as_str(), first.id.as_str()]);
+        assert_eq!(links.iter().map(|link| link.left.id.as_str()).collect::<Vec<_>>(),
+            vec![b.id.as_str(), a.id.as_str()]);
+    }
+
+    #[test]
+    fn recycle_restoration_preserves_original_location_association_order() {
+        let (_dir, work) = work();
+        let event = work.create_event().unwrap();
+        let a = work.create_location(None).unwrap();
+        let b = work.create_location(None).unwrap();
+        for location_id in [&a.id, &b.id] {
+            work.create_association(&CreateAssociationPayload {
+                left: LinkRefDto { kind: "event".into(), id: event.id.clone() },
+                right: LinkRefDto { kind: "location".into(), id: location_id.clone() },
+                note: String::new(),
+            }).unwrap();
+        }
+        work.delete_location(&a.id).unwrap();
+        let visible = work.list_associations("event", &event.id).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].left.id, b.id);
+        work.restore_recycle("location", &a.id).unwrap();
+        work.delete_event(&event.id).unwrap();
+        assert!(work.list_associations("location", &a.id).unwrap().is_empty());
+        work.restore_recycle("event", &event.id).unwrap();
+        let path = work.path.clone();
+        drop(work);
+        let reopened = WorkPackage::open(&path).unwrap();
+        let links = reopened.list_associations("event", &event.id).unwrap();
+        assert_eq!(links.iter().map(|link| link.left.id.as_str()).collect::<Vec<_>>(),
+            vec![a.id.as_str(), b.id.as_str()]);
     }
 
     #[test]
