@@ -18,6 +18,7 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
     if !root.is_dir() {
         return Ok(Vec::new());
     }
+    WorkPackage::recover_interrupted_replacements(&root)?;
     let mut packages = Vec::new();
     let mut damaged = Vec::new();
     for entry in fs::read_dir(&root)? {

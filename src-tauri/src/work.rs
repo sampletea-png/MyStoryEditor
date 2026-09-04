@@ -601,6 +601,47 @@ impl WorkPackage {
         Self::open(&dest)
     }
 
+    /// 作品库发现前恢复两次重命名之间中断的替换，不依赖源数据包仍存在。
+    pub(crate) fn recover_interrupted_replacements(library: &Path) -> AppResult<()> {
+        for entry in fs::read_dir(library)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() { continue; }
+            let name = entry.file_name();
+            let Some(source_name) = name.to_str().and_then(|name| name.strip_suffix(RESTORE_SUFFIX)) else { continue; };
+            if source_name.is_empty() || !Path::new(source_name).components().all(|part|
+                matches!(part, std::path::Component::Normal(_))) { continue; }
+            let source = library.join(source_name);
+            for candidate in fs::read_dir(entry.path())? {
+                let candidate = candidate?;
+                if !candidate.file_type()?.is_dir() { continue; }
+                let stage_name = candidate.file_name();
+                let Some(token) = stage_name.to_str().and_then(|name| name.strip_prefix(".replacement-")) else { continue; };
+                if Uuid::parse_str(token).is_err() { continue; }
+                let staging = candidate.path();
+                let previous = staging.join("previous");
+                if !fs::symlink_metadata(&previous).is_ok_and(|meta| meta.file_type().is_dir()) { continue; }
+                // 活跃替换持有同一把锁；不能抢救仍在进行的目录切换。
+                let Ok(_lock) = acquire_package_lock(&source) else { continue; };
+                // 包括文件、目录和悬空链接；身份相同也不代表可以覆盖。
+                match fs::symlink_metadata(&source) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => continue,
+                }
+                let usable = read_manifest(&previous).and_then(|manifest|
+                    reject_unreadable_package(&previous, manifest.database_state));
+                if usable.is_err() { continue; }
+                fs::rename(&previous, &source)?;
+                // 原稿已原位恢复，旁路恢复点不动。只清理该次替换的待用副本。
+                let next = staging.join("next");
+                if fs::symlink_metadata(&next).is_ok_and(|meta| meta.file_type().is_dir()) {
+                    let _ = fs::remove_dir_all(&next);
+                }
+                let _ = fs::remove_dir(&staging);
+            }
+        }
+        Ok(())
+    }
+
     /// 仅供作品库使用：先保全当前稿，再在独占锁下切换整份数据包。
     pub fn replace_from_point(source: &Path, folder_name: &str, confirmed: bool) -> AppResult<WorkSummary> {
         if !confirmed {
@@ -645,6 +686,11 @@ impl WorkPackage {
         if let Err(error) = fs::rename(source, &previous) {
             let _ = fs::remove_dir_all(&staging);
             return Err(error.into());
+        }
+        #[cfg(test)]
+        if std::env::var_os("STORY_EDITOR_REPLACEMENT_PAUSE").as_deref() == Some(source.as_os_str()) {
+            fs::write(std::env::var_os("STORY_EDITOR_REPLACEMENT_READY").unwrap(), b"ready")?;
+            loop { std::thread::park(); }
         }
         if let Err(error) = fs::rename(&next, source) {
             if fs::rename(&previous, source).is_err() {
@@ -1998,6 +2044,101 @@ mod tests {
         drop(work);
         WorkPackage::replace_from_point(&path, selected, true).unwrap();
         assert_eq!(WorkPackage::open(&path).unwrap().opened().unwrap().chapter.unwrap().title, "第一章");
+    }
+
+    #[test]
+    fn interrupted_replacement_child() {
+        let Some(path) = std::env::var_os("STORY_EDITOR_REPLACEMENT_PAUSE") else { return; };
+        let folder = std::env::var("STORY_EDITOR_REPLACEMENT_POINT").unwrap();
+        WorkPackage::replace_from_point(Path::new(&path), &folder, true).unwrap();
+        panic!("replacement must pause before the second rename");
+    }
+
+    fn killed_replacement() -> (tempfile::TempDir, PathBuf, String) {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let first = work.opened().unwrap().chapter.unwrap();
+        let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+        work.save_chapter(&SaveChapterPayload {
+            id: first.id, title: "最后成功保存的原稿".into(),
+            body: serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"原稿不能隐藏或丢失"}]}]}),
+            cursor_from: 3, cursor_to: 3, scroll_top: 12.0,
+        }).unwrap();
+        let path = work.path.clone();
+        let id = work.manifest.id.clone();
+        drop(work);
+        let ready = dir.path().join("replacement.ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "work::tests::interrupted_replacement_child"])
+            .env("STORY_EDITOR_REPLACEMENT_PAUSE", &path)
+            .env("STORY_EDITOR_REPLACEMENT_READY", &ready)
+            .env("STORY_EDITOR_REPLACEMENT_POINT", &point.folder_name)
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let started = std::time::Instant::now();
+        while !ready.is_file() {
+            if started.elapsed() > std::time::Duration::from_secs(15) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("replacement did not reach the rename gap");
+            }
+            assert!(child.try_wait().unwrap().is_none(), "child exited before rename gap");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let during_replacement = crate::library::list_works(dir.path(), false);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(during_replacement.unwrap().is_empty(), "discovery must not interfere with an active replacement");
+        assert!(!path.exists(), "fixture must reproduce the missing source path");
+        (dir, path, id)
+    }
+
+    #[test]
+    fn library_discovery_recovers_original_after_killing_replacement_between_renames() {
+        let (dir, path, id) = killed_replacement();
+        let safeguards = WorkPackage::available_restore_points(&path).unwrap();
+        let before: Vec<_> = safeguards.iter().map(|p| snapshot_tree(&p.path)).collect();
+        let listed = crate::library::list_works(dir.path(), false).unwrap();
+        assert_eq!(listed.len(), 1, "last saved original must be discoverable after restart");
+        assert_eq!(listed[0].id, id);
+        let found = crate::library::find_work_dir(dir.path(), &id, false).unwrap();
+        assert_eq!(found, path);
+        let reopened = WorkPackage::open(&found).unwrap();
+        let chapter = reopened.opened().unwrap().chapter.unwrap();
+        assert_eq!(chapter.title, "最后成功保存的原稿");
+        assert_eq!(chapter.body, serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"原稿不能隐藏或丢失"}]}]}));
+        assert!(safeguards.iter().filter(|p| p.kind == RestoreKind::Manual).count() >= 2);
+        assert_eq!(safeguards.iter().map(|p| snapshot_tree(&p.path)).collect::<Vec<_>>(), before);
+        assert_eq!(crate::library::list_works(dir.path(), false).unwrap().len(), 1);
+        assert!(!fs::read_dir(restore_points_dir(&path)).unwrap().any(|e|
+            e.unwrap().file_name().to_string_lossy().starts_with(".replacement-")));
+    }
+
+    #[test]
+    fn interrupted_replacement_never_overwrites_a_new_package_at_the_source_path() {
+        let (dir, path, original_id) = killed_replacement();
+        let other = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        assert_eq!(other.path, path);
+        let other_id = other.manifest.id.clone();
+        drop(other);
+        let original_before = snapshot_tree(&path);
+        let recovery_before = snapshot_tree(&restore_points_dir(&path));
+        for _ in 0..2 {
+            let listed = crate::library::list_works(dir.path(), false).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, other_id);
+            assert_eq!(snapshot_tree(&path), original_before);
+            assert_eq!(snapshot_tree(&restore_points_dir(&path)), recovery_before);
+        }
+        // 作者移走占位作品后，下一次发现自动重试；原稿一直在暂存中保留。
+        let relocated = dir.path().join("另存作品");
+        fs::rename(&path, &relocated).unwrap();
+        let listed = crate::library::list_works(dir.path(), false).unwrap();
+        assert_eq!(listed.len(), 2);
+        let recovered = crate::library::find_work_dir(dir.path(), &original_id, false).unwrap();
+        assert_eq!(WorkPackage::open(&recovered).unwrap().opened().unwrap().chapter.unwrap().title,
+            "最后成功保存的原稿");
+        assert_eq!(snapshot_tree(&relocated), original_before);
     }
 
     #[test]
