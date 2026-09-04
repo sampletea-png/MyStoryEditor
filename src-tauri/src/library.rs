@@ -18,7 +18,7 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
     if !root.is_dir() {
         return Ok(Vec::new());
     }
-    WorkPackage::recover_interrupted_replacements(&root)?;
+    let recovery_problems = WorkPackage::recover_interrupted_replacements(&root)?;
     let mut packages = Vec::new();
     let mut damaged = Vec::new();
     for entry in fs::read_dir(&root)? {
@@ -66,6 +66,25 @@ pub fn list_works(library: &Path, recycled: bool) -> AppResult<Vec<WorkSummary>>
         })
         .collect();
     summaries.extend(damaged);
+    for (source, problem) in recovery_problems {
+        let path = source.to_string_lossy().into_owned();
+        if let Some(summary) = summaries.iter_mut().find(|summary| summary.path == path) {
+            summary.problem = Some(match summary.problem.take() {
+                Some(existing) => format!("{existing}\n{problem}"),
+                None => problem,
+            });
+        } else {
+            let folder_name = source.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            summaries.push(WorkSummary {
+                id: format!("damaged:{path}"),
+                name: folder_name.clone(),
+                folder_name,
+                path,
+                recycled,
+                problem: Some(problem),
+            });
+        }
+    }
     summaries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(summaries)
 }
@@ -177,4 +196,115 @@ fn copy_dir(source: &Path, dest: &Path) -> AppResult<()> {
 
 pub fn create_work_package(library: &Path, name: &str) -> AppResult<WorkPackage> {
     WorkPackage::create(library, name)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    struct DeniedDirectory(PathBuf);
+
+    impl DeniedDirectory {
+        fn set_access(path: &Path, deny: bool) {
+            let action = if deny { "AddAccessRule" } else { "RemoveAccessRuleSpecific" };
+            let script = format!(
+                "$ErrorActionPreference = 'Stop'; \
+                 $acl = [System.IO.Directory]::GetAccessControl($env:STORY_TEST_DENIED_DIR); \
+                 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; \
+                 $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'ListDirectory', 'Deny'); \
+                 $acl.{action}($rule); \
+                 [System.IO.Directory]::SetAccessControl($env:STORY_TEST_DENIED_DIR, $acl)"
+            );
+            let output = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .env("STORY_TEST_DENIED_DIR", path)
+                .output().unwrap();
+            assert!(output.status.success(), "ACL setup/cleanup failed: {}",
+                String::from_utf8_lossy(&output.stderr));
+        }
+
+        fn new(path: &Path) -> Self {
+            Self::set_access(path, true);
+            let guard = Self(path.to_path_buf());
+            assert_eq!(fs::read_dir(path).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied,
+                "the regression must exercise actual Windows denied access");
+            guard
+        }
+    }
+
+    impl Drop for DeniedDirectory {
+        fn drop(&mut self) {
+            Self::set_access(&self.0, false);
+        }
+    }
+
+    #[test]
+    fn list_works_isolates_denied_recovery_directory_and_reports_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let healthy = WorkPackage::create(dir.path(), "健康作品").unwrap();
+        let healthy_id = healthy.summary(false).id;
+        drop(healthy);
+        let source = dir.path().join("待恢复作品");
+        let recovery = restore_points_dir(&source);
+        fs::create_dir(&recovery).unwrap();
+        let denied = DeniedDirectory::new(&recovery);
+
+        let listed = list_works(dir.path(), false).expect("one unreadable recovery directory must not hide healthy works");
+        assert!(listed.iter().any(|work| work.id == healthy_id && work.problem.is_none()));
+        let affected = listed.iter().find(|work| work.path == source.to_string_lossy()).unwrap();
+        assert!(affected.problem.as_ref().unwrap().contains(recovery.to_str().unwrap()));
+        assert!(!source.exists(), "failed recovery must not recreate the source");
+
+        drop(denied);
+        let listed = list_works(dir.path(), false).unwrap();
+        assert_eq!(listed.len(), 1, "transient diagnostics should clear on the next discovery");
+        assert_eq!(listed[0].id, healthy_id);
+    }
+
+    #[test]
+    fn list_works_isolates_failed_recovery_stage_and_retries_without_losing_works() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let healthy = WorkPackage::create(dir.path(), "健康作品").unwrap();
+        let healthy_id = healthy.summary(false).id;
+        drop(healthy);
+        let mut staged = Vec::new();
+        for name in ["被占用的恢复原稿", "可恢复原稿"] {
+            let work = WorkPackage::create(dir.path(), name).unwrap();
+            let summary = work.summary(false);
+            drop(work);
+            let source = PathBuf::from(&summary.path);
+            let stage = restore_points_dir(&source).join(format!(".replacement-{}", Uuid::new_v4()));
+            fs::create_dir(&stage).unwrap();
+            fs::rename(&source, stage.join("previous")).unwrap();
+            staged.push((summary, stage));
+        }
+        // A real Windows handle permits validation reads but denies moving the original.
+        let held = fs::OpenOptions::new().read(true).share_mode(3)
+            .custom_flags(0x02000000) // FILE_FLAG_BACKUP_SEMANTICS: open a directory.
+            .open(staged[0].1.join("previous")).unwrap();
+        assert_eq!(fs::rename(staged[0].1.join("previous"), &staged[0].0.path)
+            .unwrap_err().raw_os_error(), Some(32), "Windows must actually deny the rename");
+
+        let listed = list_works(dir.path(), false).unwrap();
+        assert_eq!(listed.len(), 3);
+        assert!(listed.iter().any(|work| work.id == healthy_id && work.problem.is_none()));
+        assert!(listed.iter().any(|work| work.id == staged[1].0.id && work.problem.is_none()),
+            "an unrelated interrupted replacement must still recover");
+        let affected = listed.iter().find(|work| work.path == staged[0].0.path).unwrap();
+        assert!(affected.problem.as_ref().unwrap().contains(staged[0].1.to_str().unwrap()));
+        assert!(!Path::new(&staged[0].0.path).exists());
+
+        drop(held);
+        let listed = list_works(dir.path(), false).unwrap();
+        assert_eq!(listed.len(), 3);
+        assert!(listed.iter().all(|work| work.problem.is_none()));
+        for (original, _) in staged {
+            let found = listed.iter().find(|work| work.id == original.id).unwrap();
+            assert_eq!(found.path, original.path);
+            let reopened = WorkPackage::open(Path::new(&found.path)).unwrap();
+            assert_eq!(reopened.opened().unwrap().chapter.unwrap().title, "第一章");
+        }
+    }
 }

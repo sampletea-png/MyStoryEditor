@@ -602,7 +602,8 @@ impl WorkPackage {
     }
 
     /// 作品库发现前恢复两次重命名之间中断的替换，不依赖源数据包仍存在。
-    pub(crate) fn recover_interrupted_replacements(library: &Path) -> AppResult<()> {
+    pub(crate) fn recover_interrupted_replacements(library: &Path) -> AppResult<Vec<(PathBuf, String)>> {
+        let mut problems = Vec::new();
         for entry in fs::read_dir(library)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() { continue; }
@@ -611,35 +612,64 @@ impl WorkPackage {
             if source_name.is_empty() || !Path::new(source_name).components().all(|part|
                 matches!(part, std::path::Component::Normal(_))) { continue; }
             let source = library.join(source_name);
-            for candidate in fs::read_dir(entry.path())? {
-                let candidate = candidate?;
-                if !candidate.file_type()?.is_dir() { continue; }
+            let recovery = entry.path();
+            let candidates = match fs::read_dir(&recovery) {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    problems.push((source.clone(), format!("无法检查恢复路径 {}：{error}", recovery.display())));
+                    continue;
+                }
+            };
+            for candidate in candidates {
+                let candidate = match candidate {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        problems.push((source.clone(), format!("无法检查恢复路径 {}：{error}", recovery.display())));
+                        continue;
+                    }
+                };
                 let stage_name = candidate.file_name();
                 let Some(token) = stage_name.to_str().and_then(|name| name.strip_prefix(".replacement-")) else { continue; };
                 if Uuid::parse_str(token).is_err() { continue; }
                 let staging = candidate.path();
+                let recovered = (|| -> AppResult<()> {
+                if !candidate.file_type()?.is_dir() { return Ok(()); }
                 let previous = staging.join("previous");
-                if !fs::symlink_metadata(&previous).is_ok_and(|meta| meta.file_type().is_dir()) { continue; }
+                match fs::symlink_metadata(&previous) {
+                    Ok(meta) if meta.file_type().is_dir() => {},
+                    Ok(_) => return Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(error.into()),
+                }
                 // 活跃替换持有同一把锁；不能抢救仍在进行的目录切换。
-                let Ok(_lock) = acquire_package_lock(&source) else { continue; };
+                let _lock = match acquire_package_lock(&source) {
+                    Ok(lock) => lock,
+                    Err(AppError::Message(message)) if message == WORK_ALREADY_OPEN => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 // 包括文件、目录和悬空链接；身份相同也不代表可以覆盖。
                 match fs::symlink_metadata(&source) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    _ => continue,
+                    Ok(_) => return Ok(()),
+                    Err(error) => return Err(error.into()),
                 }
-                let usable = read_manifest(&previous).and_then(|manifest|
-                    reject_unreadable_package(&previous, manifest.database_state));
-                if usable.is_err() { continue; }
+                let manifest = read_manifest(&previous)?;
+                reject_unreadable_package(&previous, manifest.database_state)?;
                 fs::rename(&previous, &source)?;
                 // 原稿已原位恢复，旁路恢复点不动。只清理该次替换的待用副本。
                 let next = staging.join("next");
                 if fs::symlink_metadata(&next).is_ok_and(|meta| meta.file_type().is_dir()) {
-                    let _ = fs::remove_dir_all(&next);
+                    fs::remove_dir_all(&next)?;
                 }
-                let _ = fs::remove_dir(&staging);
+                fs::remove_dir(&staging)?;
+                Ok(())
+                })();
+                if let Err(error) = recovered {
+                    problems.push((source.clone(), format!("无法完成恢复路径 {}：{error}", staging.display())));
+                }
             }
         }
-        Ok(())
+        Ok(problems)
     }
 
     /// 仅供作品库使用：先保全当前稿，再在独占锁下切换整份数据包。
