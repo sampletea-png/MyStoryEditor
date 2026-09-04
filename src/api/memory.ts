@@ -84,8 +84,17 @@ type StoredWork = {
   settings: Map<string, Soft<SettingEntry>>;
   associations: Soft<Association>[];
   workMap: WorkMapImage | null;
-  restorePoints: RestorePoint[];
+  restorePoints: StoredRestorePoint[];
 };
+
+type StoredRestorePoint = RestorePoint & {
+  snapshot: WorkArchiveSnapshot;
+  workMap: WorkMapImage | null;
+};
+
+function restorePointSummary(point: StoredRestorePoint): RestorePoint {
+  return { path: point.path, folderName: point.folderName, createdAt: point.createdAt, kind: point.kind };
+}
 
 function createId() {
   return crypto.randomUUID();
@@ -181,7 +190,7 @@ function emptyWorkFields() {
     settings: new Map<string, Soft<SettingEntry>>(),
     associations: [] as Soft<Association>[],
     workMap: null as WorkMapImage | null,
-    restorePoints: [] as RestorePoint[],
+    restorePoints: [] as StoredRestorePoint[],
   };
 }
 
@@ -304,14 +313,29 @@ function todayStamp(): string {
 
 function addRestorePoint(work: StoredWork, kind: RestoreKind): RestorePoint {
   const folderName = nextRestoreFolderName(work, kind);
-  const point: RestorePoint = {
+  const point: StoredRestorePoint = {
     path: `${restorePointsDir(work)}/${folderName}`,
     folderName,
     createdAt: new Date().toISOString(),
     kind,
+    snapshot: snapshotWork(work),
+    workMap: structuredClone(work.workMap),
   };
   work.restorePoints.push(point);
-  return point;
+  if (kind !== "manual") {
+    const automatic = work.restorePoints.filter(item => item.kind !== "manual").reverse();
+    const keep = new Set(automatic.slice(0, 10).map(item => item.path));
+    const days = new Set<string>();
+    for (const item of automatic) {
+      const day = item.folderName.slice(0, 10);
+      if (days.size < 7 && !days.has(day)) {
+        days.add(day);
+        keep.add(item.path);
+      }
+    }
+    work.restorePoints = work.restorePoints.filter(item => item.kind === "manual" || keep.has(item.path));
+  }
+  return restorePointSummary(point);
 }
 
 function ensureDailyRestorePoint(work: StoredWork): RestorePoint | null {
@@ -1270,8 +1294,37 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
     async createRestorePoint() {
       return addRestorePoint(requireOpen(), "manual");
     },
-    async listRestorePoints() {
-      return requireOpen().restorePoints.map((item) => ({ ...item }));
+    async listRestorePoints(workId) {
+      const work = workId ? works.get(workId) : requireOpen();
+      if (!work) throw new Error("找不到这部作品");
+      return work.restorePoints.map(restorePointSummary);
+    },
+    async restoreFromPoint(workId, folderName, replaceConfirmed = false) {
+      const source = works.get(workId);
+      const point = source?.restorePoints.find(item => item.folderName === folderName);
+      if (!source || !point) throw new Error("找不到这个恢复点");
+      if (replaceConfirmed) {
+        if (openId) throw new Error("请先保存并回作品库，再替换当前作品");
+        acquireLock(source.summary.path);
+        try {
+          addRestorePoint(source, "manual");
+          const replacement = workFromSnapshot(point.snapshot, source.summary.folderName,
+            shared.libraryPath ?? defaultLibraryPath);
+          replacement.summary = { ...source.summary, name: point.snapshot.name };
+          replacement.workMap = structuredClone(point.workMap);
+          replacement.restorePoints = source.restorePoints;
+          works.set(workId, replacement);
+          return { ...replacement.summary };
+        } finally {
+          shared.locks.delete(source.summary.path);
+        }
+      }
+      const folder = uniqueFolderName(point.snapshot.name,
+        new Set([...works.values()].map(work => work.summary.folderName.toLowerCase())));
+      const work = workFromSnapshot(point.snapshot, folder, shared.libraryPath ?? defaultLibraryPath);
+      work.workMap = structuredClone(point.workMap);
+      works.set(work.summary.id, work);
+      return { ...work.summary };
     },
     async exportBody(request) {
       const work = requireOpen();

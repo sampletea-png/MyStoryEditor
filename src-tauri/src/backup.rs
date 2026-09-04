@@ -120,8 +120,38 @@ pub fn list_restore_points(work_dir: &Path) -> AppResult<Vec<RestorePoint>> {
             kind,
         });
     }
-    points.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
+    points.sort_by(|a, b| {
+        let ak = point_order(&a.folder_name);
+        let bk = point_order(&b.folder_name);
+        ak.0.cmp(&bk.0).then(a.created_at.cmp(&b.created_at)).then(ak.1.cmp(&bk.1))
+    });
     Ok(points)
+}
+
+fn point_order(name: &str) -> (String, u64) {
+    let stamp = name.chars().take(17).collect();
+    let sequence = name.rsplit('-').next().and_then(|part| part.parse().ok()).unwrap_or(1);
+    (stamp, sequence)
+}
+
+pub(crate) fn prune_automatic_points(work_dir: &Path) -> AppResult<()> {
+    use std::collections::HashSet;
+    let points = list_restore_points(work_dir)?;
+    let automatic: Vec<_> = points.iter().rev().filter(|p| p.kind != RestoreKind::Manual).collect();
+    let mut keep: HashSet<PathBuf> = automatic.iter().take(10).map(|p| p.path.clone()).collect();
+    let mut days = HashSet::new();
+    for point in &automatic {
+        let day: String = point.folder_name.chars().take(10).collect();
+        if days.len() < 7 && days.insert(day) {
+            keep.insert(point.path.clone());
+        }
+    }
+    for point in automatic {
+        if !keep.contains(&point.path) {
+            fs::remove_dir_all(&point.path)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn has_restore_point_on_local_date(work_dir: &Path, date: &str) -> AppResult<bool> {
@@ -179,7 +209,7 @@ fn unique_restore_folder(desired: &str, existing_lower: &[String]) -> String {
     }
 }
 
-fn copy_assets(source: &Path, dest: &Path) -> AppResult<()> {
+pub(crate) fn copy_assets(source: &Path, dest: &Path) -> AppResult<()> {
     if !source.is_dir() {
         return Ok(());
     }

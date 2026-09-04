@@ -196,8 +196,30 @@ fn create_restore_point(state: State<AppState>) -> Result<RestorePoint, String> 
 }
 
 #[tauri::command]
-fn list_restore_points(state: State<AppState>) -> Result<Vec<RestorePoint>, String> {
+fn list_restore_points(state: State<AppState>, work_id: Option<String>) -> Result<Vec<RestorePoint>, String> {
+    if let Some(id) = work_id {
+        let path = find_work_dir(&library_path(&state)?, &id, false).map_err(String::from)?;
+        return WorkPackage::available_restore_points(&path).map_err(String::from);
+    }
     with_open(&state, |work| work.list_restore_points()).map_err(String::from)
+}
+
+#[tauri::command]
+fn restore_from_point(
+    state: State<AppState>, work_id: String, folder_name: String, replace_confirmed: bool,
+) -> Result<WorkSummary, String> {
+    let library = library_path(&state)?;
+    let path = find_work_dir(&library, &work_id, false).map_err(String::from)?;
+    let open = state.open.lock().expect("open work lock");
+    if replace_confirmed {
+        if open.is_some() {
+            return Err("请先保存并回作品库，再替换当前作品".into());
+        }
+        WorkPackage::replace_from_point(&path, &folder_name, true).map_err(String::from)
+    } else {
+        let restored = WorkPackage::restore_as_new(&library, &path, &folder_name).map_err(String::from)?;
+        Ok(restored.summary(false))
+    }
 }
 
 #[tauri::command]
@@ -573,6 +595,7 @@ pub fn run() {
             clear_work_map,
             create_restore_point,
             list_restore_points,
+            restore_from_point,
             body_export_source,
             export_path_exists,
             write_export_file

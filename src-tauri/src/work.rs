@@ -578,7 +578,84 @@ impl WorkPackage {
     }
 
     pub fn list_restore_points(&self) -> AppResult<Vec<RestorePoint>> {
-        crate::backup::list_restore_points(&self.path)
+        Self::available_restore_points(&self.path)
+    }
+
+    pub fn available_restore_points(source: &Path) -> AppResult<Vec<RestorePoint>> {
+        Ok(crate::backup::list_restore_points(source)?.into_iter().filter(|point| {
+            read_manifest(&point.path).and_then(|manifest|
+                reject_unreadable_package(&point.path, manifest.database_state)).is_ok()
+        }).collect())
+    }
+
+    /// 展开旁路恢复点，不打开或改写源作品与恢复点。
+    pub fn restore_as_new(library: &Path, source: &Path, folder_name: &str) -> AppResult<Self> {
+        let point = selected_restore_point(source, folder_name)?;
+        let mut manifest = read_manifest(&point.path)?;
+        manifest.id = Uuid::new_v4().to_string();
+        manifest.database_state = Some(DatabaseState::Clean);
+        fs::create_dir_all(library)?;
+        let folder = unique_folder_name(&manifest.name, &existing_folder_names(library)?);
+        let dest = library.join(folder);
+        copy_restore_package(&point.path, &dest, &manifest)?;
+        Self::open(&dest)
+    }
+
+    /// 仅供作品库使用：先保全当前稿，再在独占锁下切换整份数据包。
+    pub fn replace_from_point(source: &Path, folder_name: &str, confirmed: bool) -> AppResult<WorkSummary> {
+        if !confirmed {
+            return Err(AppError::Message("替换当前作品需要二次确认".into()));
+        }
+        let point = selected_restore_point(source, folder_name)?;
+        let mut manifest = read_manifest(&point.path)?;
+        manifest.database_state = Some(DatabaseState::Clean);
+        let staging = restore_points_dir(source).join(format!(".replacement-{}", Uuid::new_v4()));
+        fs::create_dir(&staging)?;
+        let next = staging.join("next");
+        let previous = staging.join("previous");
+        if let Err(error) = copy_restore_package(&point.path, &next, &manifest) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        // 先固定所选内容：打开当前作品可能触发每日恢复点及保留策略。
+        let current = match Self::open(source) {
+            Ok(current) => current,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error);
+            }
+        };
+        let prepared = (|| {
+            current.create_restore_point(RestoreKind::Manual)?;
+            manifest.id = current.manifest.id.clone();
+            write_manifest(&next, &manifest)?;
+            current._lock.try_clone().map_err(AppError::from)
+        })();
+        let _lock = match prepared {
+            Ok(lock) => lock,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error);
+            }
+        };
+        let mut summary = current.summary(false);
+        summary.name = manifest.name.clone();
+        // 克隆锁句柄跨越关闭 SQLite 和目录替换，避免另一实例插入写入。
+        drop(current);
+        if let Err(error) = fs::rename(source, &previous) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error.into());
+        }
+        if let Err(error) = fs::rename(&next, source) {
+            if fs::rename(&previous, source).is_err() {
+                return Err(AppError::Message(format!("替换失败，原作品保留在 {}；替换前恢复点也已保留：{error}", previous.display())));
+            }
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error.into());
+        }
+        // 已切换成功；清理失败只留下可恢复的旧包，不把成功误报为失败。
+        let _ = fs::remove_dir_all(&staging);
+        Ok(summary)
     }
 
     pub fn export_archive(&self) -> AppResult<Vec<u8>> {
@@ -805,6 +882,34 @@ fn corrupt_package() -> AppError {
     AppError::Message(CORRUPT_PACKAGE.into())
 }
 
+fn selected_restore_point(source: &Path, folder_name: &str) -> AppResult<RestorePoint> {
+    let point = crate::backup::list_restore_points(source)?
+        .into_iter()
+        .find(|point| point.folder_name == folder_name)
+        .ok_or_else(|| AppError::Message("找不到这个恢复点".into()))?;
+    let manifest = read_manifest(&point.path).map_err(|_| corrupt_package())?;
+    reject_unreadable_package(&point.path, manifest.database_state)?;
+    Ok(point)
+}
+
+fn copy_restore_package(source: &Path, dest: &Path, manifest: &WorkManifest) -> AppResult<()> {
+    fs::create_dir(dest)?;
+    let result = (|| {
+        let conn = Connection::open_with_flags(
+            sqlite_immutable_uri(&source.join("work.sqlite")),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        backup_connection(&conn, &dest.join("work.sqlite"))?;
+        fs::create_dir(dest.join("assets"))?;
+        crate::backup::copy_assets(&source.join("assets"), &dest.join("assets"))?;
+        write_manifest(dest, manifest)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(dest);
+    }
+    result
+}
+
 fn checkpoint_for_clean_close(conn: &Connection) -> AppResult<()> {
     let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
     if busy != 0 {
@@ -822,6 +927,9 @@ fn create_clean_restore_point(
     let mut snapshot_manifest = read_manifest(&point.path)?;
     snapshot_manifest.database_state = Some(DatabaseState::Clean);
     write_manifest(&point.path, &snapshot_manifest)?;
+    if kind != RestoreKind::Manual {
+        crate::backup::prune_automatic_points(work_dir)?;
+    }
     Ok(point)
 }
 
@@ -1564,7 +1672,11 @@ mod tests {
             note: "同乡".into(),
         })
         .unwrap();
-        fs::write(work.path.join("assets").join("map.png"), b"fake-image").unwrap();
+        let mut location = work.create_location(None).unwrap();
+        location.name = "北城".into();
+        location.mark = Some(crate::setting::LocationMarkDto { x: 0.3, y: 0.2 });
+        work.save_location(&location).unwrap();
+        work.put_work_map("map.png", b"fake-image").unwrap();
 
         let point = work.create_restore_point(RestoreKind::Manual).unwrap();
         let nested = point
@@ -1579,8 +1691,15 @@ mod tests {
             b"fake-image"
         );
 
-        let restored = WorkPackage::open(&point.path).unwrap();
+        character.name = "后来的名字".into();
+        work.save_character(&character).unwrap();
+        work.clear_work_map().unwrap();
+        let restored = WorkPackage::restore_as_new(dir.path(), &work.path, &point.folder_name).unwrap();
         let opened = restored.opened().unwrap();
+        assert_ne!(opened.work.id, work.manifest.id);
+        assert_eq!(opened.work_map.as_ref().unwrap().bytes, b"fake-image");
+        let mark = opened.catalog.locations[0].mark.as_ref().unwrap();
+        assert_eq!((mark.x, mark.y), (0.3, 0.2));
         assert_eq!(opened.outline.volumes[0].title, "上卷");
         assert_eq!(opened.chapter.as_ref().unwrap().title, "开篇");
         assert!(extract_plain_text(&opened.chapter.unwrap().body).contains("风过北境"));
@@ -1780,6 +1899,105 @@ mod tests {
             err,
         );
         drop(source);
+    }
+
+    #[test]
+    fn restore_as_new_keeps_the_point_and_its_content_with_a_new_identity() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let first = work.opened().unwrap().chapter.unwrap();
+        work.rename_chapter(&first.id, "恢复点里的开篇").unwrap();
+        let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+        let before = fs::read(point.path.join("work.json")).unwrap();
+        work.rename_chapter(&first.id, "后来修改").unwrap();
+        let restored = WorkPackage::restore_as_new(dir.path(), &work.path, &point.folder_name).unwrap();
+        assert_ne!(restored.manifest.id, work.manifest.id);
+        assert_ne!(restored.path, work.path);
+        assert_eq!(restored.opened().unwrap().chapter.unwrap().title, "恢复点里的开篇");
+        assert_eq!(work.opened().unwrap().chapter.unwrap().title, "后来修改");
+        assert_eq!(fs::read(point.path.join("work.json")).unwrap(), before);
+    }
+
+    #[test]
+    fn automatic_points_keep_latest_ten_and_seven_daily_representatives() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "保全").unwrap();
+        let manual = work.create_restore_point(RestoreKind::Manual).unwrap();
+        for day in 1..=10 {
+            for hour in [10, 20] {
+                let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+                fs::rename(&point.path, restore_points_dir(&work.path)
+                    .join(format!("2000-01-{day:02}_{hour:02}0000-自动"))).unwrap();
+            }
+        }
+        work.create_restore_point(RestoreKind::Auto).unwrap();
+        let points = work.list_restore_points().unwrap();
+        assert_eq!(points.iter().filter(|p| p.kind != RestoreKind::Manual).count(), 12);
+        assert!(points.iter().any(|p| p.folder_name == "2000-01-05_200000-自动"));
+        assert!(points.iter().any(|p| p.folder_name == "2000-01-06_200000-自动"));
+        assert!(!points.iter().any(|p| p.folder_name == "2000-01-05_100000-自动"));
+        assert!(points.iter().any(|p| p.path == manual.path));
+    }
+
+    #[test]
+    fn damaged_work_restores_from_latest_usable_point_without_changing_damage() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "坏包").unwrap();
+        let good = work.create_restore_point(RestoreKind::Manual).unwrap();
+        let bad = work.create_restore_point(RestoreKind::Manual).unwrap();
+        let path = work.path.clone();
+        drop(work);
+        fs::write(path.join("work.json"), "损坏原包").unwrap();
+        fs::write(bad.path.join("work.sqlite"), "截断恢复点").unwrap();
+        let points = WorkPackage::available_restore_points(&path).unwrap();
+        assert_eq!(points.last().unwrap().folder_name, good.folder_name);
+        let restored = WorkPackage::restore_as_new(dir.path(), &path, &good.folder_name).unwrap();
+        assert_eq!(restored.opened().unwrap().chapter.unwrap().title, "第一章");
+        assert_eq!(fs::read_to_string(path.join("work.json")).unwrap(), "损坏原包");
+        assert_eq!(fs::read_to_string(bad.path.join("work.sqlite")).unwrap(), "截断恢复点");
+    }
+
+    #[test]
+    fn replacement_requires_confirmation_and_preserves_the_displaced_work() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "北境行纪").unwrap();
+        let first = work.opened().unwrap().chapter.unwrap();
+        let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+        work.rename_chapter(&first.id, "替换前的新稿").unwrap();
+        let path = work.path.clone();
+        let id = work.manifest.id.clone();
+        drop(work);
+        let count = WorkPackage::available_restore_points(&path).unwrap().len();
+        assert!(WorkPackage::replace_from_point(&path, &point.folder_name, false).is_err());
+        assert_eq!(WorkPackage::available_restore_points(&path).unwrap().len(), count);
+        let summary = WorkPackage::replace_from_point(&path, &point.folder_name, true).unwrap();
+        assert_eq!(summary.id, id);
+        let replaced = WorkPackage::open(&path).unwrap();
+        assert_eq!(replaced.opened().unwrap().chapter.unwrap().title, "第一章");
+        let points = replaced.list_restore_points().unwrap();
+        let safeguard = points.last().unwrap();
+        assert_eq!(safeguard.kind, RestoreKind::Manual);
+        assert_ne!(safeguard.folder_name, point.folder_name);
+        let undo = WorkPackage::restore_as_new(dir.path(), &path, &safeguard.folder_name).unwrap();
+        assert_eq!(undo.opened().unwrap().chapter.unwrap().title, "替换前的新稿");
+    }
+
+    #[test]
+    fn replacement_can_select_an_old_point_before_daily_retention_runs() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "保全").unwrap();
+        let root = restore_points_dir(&work.path);
+        let oldest = work.list_restore_points().unwrap().remove(0);
+        let selected = "2000-01-01_100000-自动";
+        fs::rename(oldest.path, root.join(selected)).unwrap();
+        for day in 2..=20 {
+            let point = work.create_restore_point(RestoreKind::Manual).unwrap();
+            fs::rename(point.path, root.join(format!("2000-01-{day:02}_100000-自动"))).unwrap();
+        }
+        let path = work.path.clone();
+        drop(work);
+        WorkPackage::replace_from_point(&path, selected, true).unwrap();
+        assert_eq!(WorkPackage::open(&path).unwrap().opened().unwrap().chapter.unwrap().title, "第一章");
     }
 
     #[test]

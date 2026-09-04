@@ -176,7 +176,9 @@ export type AppApi = {
   putWorkMap: (payload: { fileName: string; bytes: number[] }) => Promise<WorkMapImage>;
   clearWorkMap: () => Promise<void>;
   createRestorePoint: () => Promise<RestorePoint>;
-  listRestorePoints: () => Promise<RestorePoint[]>;
+  listRestorePoints: (workId?: string) => Promise<RestorePoint[]>;
+  /** 默认创建新作品；替换只在作品库中、显式二次确认后执行。 */
+  restoreFromPoint: (workId: string, folderName: string, replaceConfirmed?: boolean) => Promise<WorkSummary>;
   exportBody: (request: BodyExportRequest) => Promise<BodyExportResult>;
 };
 

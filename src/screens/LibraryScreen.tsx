@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AppApi, WorkSummary } from "../api/types";
+import { RestorePointDialog } from "./RestorePointDialog";
 
 type Props = {
   api: AppApi;
@@ -16,6 +17,8 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
   const [renameValue, setRenameValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState<WorkSummary | null>(null);
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
 
   const reload = async () => {
     const [nextWorks, nextRecycled] = await Promise.all([
@@ -80,6 +83,7 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
         </button>
       </form>
       {error ? <p className="error">{error}</p> : null}
+      {restoreNote ? <p role="status">{restoreNote}</p> : null}
       <section>
         <h2>作品</h2>
         {works.length === 0 ? <p className="muted">还没有作品。</p> : null}
@@ -107,14 +111,21 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
                     type="button"
                     className="work-open"
                     onClick={() =>
-                      void onOpenWork(work.id).catch((err) =>
-                        setError(err instanceof Error ? err.message : String(err)),
-                      )
+                      void onOpenWork(work.id).catch((err) => {
+                        const message = err instanceof Error ? err.message : String(err);
+                        setError(message);
+                        if (work.problem || message.includes("损坏")) {
+                          setRestoreTarget({ ...work, problem: message });
+                        }
+                      })
                     }
                   >
                     <strong>{work.name}</strong>
                     <span className="muted">{work.folderName}</span>
                     {work.problem ? <span className="error">{work.problem}</span> : null}
+                  </button>
+                  <button type="button" onClick={() => setRestoreTarget(work)}>
+                    {work.problem ? "从最近可用恢复点恢复" : "恢复点"}
                   </button>
                   {work.problem ? null : (
                     <button
@@ -181,6 +192,17 @@ export function LibraryScreen({ api, libraryPath, onOpenWork, onLibraryPathChang
           ))}
         </ul>
       </section>
+      {restoreTarget ? <RestorePointDialog
+        api={api}
+        work={restoreTarget}
+        onClose={() => setRestoreTarget(null)}
+        onRestored={async restored => {
+          setRestoreNote(`恢复完成：「${restored.name}」已在作品库中。`);
+          setError(null);
+          await reload();
+          setRestoreTarget(null);
+        }}
+      /> : null}
     </main>
   );
 }
