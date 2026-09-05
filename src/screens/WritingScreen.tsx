@@ -16,6 +16,7 @@ import { ChapterEditor } from "../editor/ChapterEditor";
 import { CommandPalette } from "./CommandPalette";
 import { SettingPanel, type PanelFocus } from "./SettingPanel";
 import { WorkMapOverlay } from "./WorkMapOverlay";
+import { RestorePointDialog } from "./RestorePointDialog";
 
 type Props = {
   api: AppApi;
@@ -30,7 +31,14 @@ const EXPORT_FORMATS: { id: BodyExportFormat; label: string }[] = [
   { id: "docx", label: "DOCX" },
 ];
 
-export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
+export function WritingScreen(props: Props) {
+  const [current, setCurrent] = useState(props.initial);
+  return <WritingSession key={current.work.id} {...props} initial={current} onRecovered={setCurrent} />;
+}
+
+function WritingSession({ api, initial, onBackToLibrary, onRecovered }: Props & {
+  onRecovered: (work: OpenedWork) => void;
+}) {
   const [workName, setWorkName] = useState(initial.work.name);
   const [outline, setOutline] = useState<Outline>(initial.outline);
   const [chapter, setChapter] = useState<ChapterBody | null>(initial.chapter);
@@ -52,6 +60,8 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   const [exitBlock, setExitBlock] = useState<null | "library" | "window">(null);
   const [lastPersistedAt, setLastPersistedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const recovering = useRef(false);
   const [catalog, setCatalog] = useState<SettingCatalog>(initial.catalog);
   const [panelFocus, setPanelFocus] = useState<PanelFocus | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
@@ -77,6 +87,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
   chapterRef.current = chapter;
 
   const persist = useCallback(async () => {
+    if (recovering.current) throw new Error("正在保全草稿");
     const current = chapterRef.current;
     const body = draftRef.current;
     if (!current || !body) {
@@ -89,7 +100,11 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
       cursorFrom: cursorRef.current.from,
       cursorTo: cursorRef.current.to,
       scrollTop: cursorRef.current.scrollTop,
+    }).catch(err => {
+      setError(err instanceof Error ? err.message : String(err));
+      throw err;
     });
+    setError(null);
     setChapterWords(result.wordCount);
     setSavedChapterWords(result.wordCount);
     setWorkWords(result.workWordCount);
@@ -121,6 +136,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (recovering.current) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         void autosave.saveNow();
@@ -179,7 +195,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
       return;
     }
     if (kind === "library") {
-      void api.closeWork().then(onBackToLibrary);
+      void api.closeWork().then(onBackToLibrary).catch(err => setError(String(err)));
     }
   };
 
@@ -225,6 +241,12 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
       setChapter(null);
       setDraft(null);
     }
+  };
+
+  const beginRecovery = () => {
+    recovering.current = true;
+    setExitBlock(null);
+    setRecoveryOpen(true);
   };
 
   return (
@@ -529,7 +551,20 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
           </button>
         ) : null}
         {error ? <span className="error">{error}</span> : null}
+        {(saveStatus === "保存失败" || error) ? <button type="button" onClick={beginRecovery}>从恢复点保全草稿…</button> : null}
       </footer>
+      {recoveryOpen ? <RestorePointDialog api={api}
+        work={{ ...initial.work, problem: error ?? "未保存内容需要保全" }}
+        pendingDraft={autosave.hasUnpersistedChanges() && chapter && draft ? {
+          id: chapter.id, title, body: draft, cursorFrom: cursorRef.current.from,
+          cursorTo: cursorRef.current.to, scrollTop: cursorRef.current.scrollTop,
+        } : undefined}
+        onClose={() => { recovering.current = false; setRecoveryOpen(false); }}
+        onRestored={async work => {
+          const opened = await api.openWork(work.id);
+          autosave.dispose();
+          onRecovered(opened);
+        }} /> : null}
       {mapOpen ? (
         <WorkMapOverlay
           api={api}
@@ -623,6 +658,7 @@ export function WritingScreen({ api, initial, onBackToLibrary }: Props) {
               <button type="button" onClick={() => setExitBlock(null)}>
                 取消
               </button>
+              <button type="button" onClick={beginRecovery}>从恢复点保全草稿…</button>
             </div>
           </div>
         </div>

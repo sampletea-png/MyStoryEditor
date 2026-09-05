@@ -16,6 +16,7 @@ use crate::setting::SettingCatalogDto;
 
 pub const RECYCLE_DIR: &str = "作品库回收区";
 pub const WORK_ALREADY_OPEN: &str = "该作品已在其他窗口打开";
+pub const INVALID_WORK_PATH: &str = "作品路径已失效或被替换；未保存内容仍保留，请从恢复点恢复为新作品";
 pub const CORRUPT_PACKAGE: &str = "作品数据包已损坏，无法作为当前作品打开";
 pub use crate::backup::{restore_points_dir, RestoreKind, RestorePoint, RESTORE_SUFFIX};
 
@@ -161,16 +162,24 @@ pub struct WorkPackage {
     pub manifest: WorkManifest,
     pub(crate) conn: Connection,
     _lock: File,
+    // Keep the original objects alive so a removed file's identity cannot be reused.
+    directory: File,
+    database: File,
 }
 
 impl Drop for WorkPackage {
     fn drop(&mut self) {
+        if self.ensure_path_valid().is_err() {
+            // SQLite's implicit close must not checkpoint/unlink sidecars at a reused path.
+            let _ = self.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true);
+            return;
+        }
         if std::thread::panicking() || checkpoint_for_clean_close(&self.conn).is_err() {
             return;
         }
         let mut clean_manifest = self.manifest.clone();
         clean_manifest.database_state = Some(DatabaseState::Clean);
-        if write_manifest(&self.path, &clean_manifest).is_ok() {
+        if self.write_current_manifest(&clean_manifest).is_ok() {
             self.manifest = clean_manifest;
         }
     }
@@ -202,6 +211,8 @@ impl WorkPackage {
         }
         let lock = acquire_package_lock(&path)?;
         let package = Self {
+            directory: identity_handle(&path)?,
+            database: identity_handle(&path.join("work.sqlite"))?,
             path,
             manifest,
             conn,
@@ -228,7 +239,9 @@ impl WorkPackage {
         reject_unreadable_package(path, manifest.database_state)?;
         manifest.database_state = Some(DatabaseState::Unclean);
         write_manifest(path, &manifest)?;
-        let conn = Connection::open(path.join("work.sqlite"))?;
+        let directory = identity_handle(path)?;
+        let database = identity_handle(&path.join("work.sqlite"))?;
+        let conn = Connection::open_with_flags(path.join("work.sqlite"), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         if !crate::backup::is_inside_restore_points_dir(path)
             && crate::schema::needs_schema_migration(&conn)?
@@ -237,6 +250,8 @@ impl WorkPackage {
         }
         ensure_schema(&conn)?;
         let package = Self {
+            directory,
+            database,
             path: path.to_path_buf(),
             manifest,
             conn,
@@ -249,6 +264,7 @@ impl WorkPackage {
     }
 
     pub fn ensure_daily_restore_point(&self) -> AppResult<Option<RestorePoint>> {
+        self.ensure_path_valid()?;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         if crate::backup::has_restore_point_on_local_date(&self.path, &today)? {
             return Ok(None);
@@ -272,6 +288,7 @@ impl WorkPackage {
     }
 
     pub fn opened(&self) -> AppResult<OpenedWorkDto> {
+        self.ensure_path_valid()?;
         let outline = self.outline()?;
         let session = self.session()?;
         let chapter = match &session.chapter_id {
@@ -294,6 +311,7 @@ impl WorkPackage {
     }
 
     pub fn outline(&self) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         let mut volumes = Vec::new();
         let mut stmt = self.conn.prepare(
             "SELECT id, title, sort_order FROM volumes WHERE deleted_at IS NULL ORDER BY sort_order",
@@ -328,6 +346,7 @@ impl WorkPackage {
     }
 
     pub fn session(&self) -> AppResult<SessionDto> {
+        self.ensure_path_valid()?;
         Ok(SessionDto {
             chapter_id: self.get_session_value("last_chapter_id")?,
             cursor_from: self
@@ -346,6 +365,7 @@ impl WorkPackage {
     }
 
     pub fn load_chapter(&self, id: &str) -> AppResult<ChapterBodyDto> {
+        self.ensure_path_valid()?;
         let chapter = self.conn.query_row(
             "SELECT id, title, status, body_json, document_schema_version, word_count, cursor_from, cursor_to, scroll_top
              FROM chapters WHERE id = ?1 AND deleted_at IS NULL",
@@ -370,6 +390,7 @@ impl WorkPackage {
     }
 
     pub fn save_chapter(&self, payload: &SaveChapterPayload) -> AppResult<(i64, i64)> {
+        self.ensure_path_valid()?;
         let word_count = count_document_words(&payload.body);
         let body = serde_json::to_string(&payload.body)?;
         let changed = self.conn.execute(
@@ -394,10 +415,12 @@ impl WorkPackage {
         self.set_session_value("cursor_from", &payload.cursor_from.to_string())?;
         self.set_session_value("cursor_to", &payload.cursor_to.to_string())?;
         self.set_session_value("scroll_top", &payload.scroll_top.to_string())?;
+        self.ensure_path_valid()?;
         Ok((word_count, self.work_word_count()?))
     }
 
     pub fn create_volume(&self, title: &str) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         let volume_count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM volumes WHERE deleted_at IS NULL",
             [],
@@ -418,12 +441,14 @@ impl WorkPackage {
     }
 
     pub fn cancel_volumes(&self) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         self.conn.execute("UPDATE chapters SET volume_id = NULL WHERE deleted_at IS NULL", [])?;
         self.conn.execute("UPDATE volumes SET deleted_at = ?1 WHERE deleted_at IS NULL", [now_ts()])?;
         self.outline()
     }
 
     pub fn create_chapter(&self, options: &CreateChapterOptions) -> AppResult<(OutlineDto, ChapterBodyDto)> {
+        self.ensure_path_valid()?;
         let volumes: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM volumes WHERE deleted_at IS NULL",
             [],
@@ -455,6 +480,7 @@ impl WorkPackage {
     }
 
     pub fn rename_volume(&self, id: &str, title: &str) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         self.conn.execute(
             "UPDATE volumes SET title = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![title, id],
@@ -463,6 +489,7 @@ impl WorkPackage {
     }
 
     pub fn rename_chapter(&self, id: &str, title: &str) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         self.conn.execute(
             "UPDATE chapters SET title = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![title, id],
@@ -471,6 +498,7 @@ impl WorkPackage {
     }
 
     pub fn delete_volume(&self, id: &str) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         let ts = now_ts();
         self.conn.execute(
             "UPDATE chapters SET deleted_at = ?1 WHERE volume_id = ?2 AND deleted_at IS NULL",
@@ -484,6 +512,7 @@ impl WorkPackage {
     }
 
     pub fn delete_chapter(&self, id: &str) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         self.conn.execute(
             "UPDATE chapters SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![now_ts(), id],
@@ -492,6 +521,7 @@ impl WorkPackage {
     }
 
     pub fn move_chapter(&self, id: &str, direction: &str) -> AppResult<OutlineDto> {
+        self.ensure_path_valid()?;
         let (volume_id, sort_order): (Option<String>, i64) = self.conn.query_row(
             "SELECT volume_id, sort_order FROM chapters WHERE id = ?1 AND deleted_at IS NULL",
             [id],
@@ -529,6 +559,7 @@ impl WorkPackage {
     }
 
     pub fn body_export_source(&self) -> AppResult<BodyExportSourceDto> {
+        self.ensure_path_valid()?;
         let outline = self.outline()?;
         let mut chapters = Vec::new();
         let mut stmt = self
@@ -552,6 +583,7 @@ impl WorkPackage {
     }
 
     pub fn set_chapter_status(&self, id: &str, status: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         if !matches!(status, "初稿" | "修订中" | "定稿") {
             return Err(AppError::Message("未知的章节状态".into()));
         }
@@ -563,22 +595,71 @@ impl WorkPackage {
     }
 
     pub fn rename_work(&mut self, name: &str) -> AppResult<()> {
-        self.manifest.name = name.to_string();
-        self.manifest.updated_at = now_iso();
-        write_manifest(&self.path, &self.manifest)
+        self.ensure_path_valid()?;
+        let mut manifest = self.manifest.clone();
+        manifest.name = name.to_string();
+        manifest.updated_at = now_iso();
+        self.write_current_manifest(&manifest)?;
+        self.manifest = manifest;
+        Ok(())
     }
 
     #[allow(dead_code)]
     pub fn backup_to(&self, dest: &Path) -> AppResult<()> {
+        self.ensure_path_valid()?;
         backup_connection(&self.conn, dest)
     }
 
     pub fn create_restore_point(&self, kind: RestoreKind) -> AppResult<RestorePoint> {
+        self.ensure_path_valid()?;
         create_clean_restore_point(&self.path, &self.conn, kind)
     }
 
     pub fn list_restore_points(&self) -> AppResult<Vec<RestorePoint>> {
         Self::available_restore_points(&self.path)
+    }
+
+    /// Only used on the newly restored copy. A chapter newer than the point is appended.
+    pub fn save_recovered_chapter(&self, payload: &SaveChapterPayload) -> AppResult<()> {
+        self.ensure_path_valid()?;
+        let outline = self.outline()?;
+        let id = if outline.chapters.iter().any(|chapter| chapter.id == payload.id) {
+            payload.id.clone()
+        } else {
+            self.create_chapter(&CreateChapterOptions {
+                after_chapter_id: None,
+                selected_volume_id: outline.volumes.last().map(|volume| volume.id.clone()),
+            })?.1.id
+        };
+        self.save_chapter(&SaveChapterPayload {
+            id, title: payload.title.clone(), body: payload.body.clone(),
+            cursor_from: payload.cursor_from, cursor_to: payload.cursor_to, scroll_top: payload.scroll_top,
+        })?;
+        Ok(())
+    }
+
+    pub fn ensure_path_valid(&self) -> AppResult<()> {
+        let valid = (|| -> AppResult<bool> {
+            Ok(file_identity(&self.directory)? == file_identity(&identity_handle(&self.path)?)?
+                && file_identity(&self.database)? == file_identity(&identity_handle(&self.path.join("work.sqlite"))?)?
+                && read_manifest(&self.path)?.id == self.manifest.id)
+        })();
+        if !matches!(valid, Ok(true)) {
+            return Err(AppError::Message(INVALID_WORK_PATH.into()));
+        }
+        Ok(())
+    }
+
+    fn write_current_manifest(&self, manifest: &WorkManifest) -> AppResult<()> {
+        use std::io::Write;
+        // Open without CREATE/TRUNCATE, validate again, then write through this handle.
+        // A path swap cannot redirect the subsequent write into a different package.
+        let mut file = OpenOptions::new().write(true).open(self.path.join("work.json"))?;
+        self.ensure_path_valid()?;
+        let bytes = serde_json::to_vec_pretty(manifest)?;
+        file.write_all(&bytes)?;
+        file.set_len(bytes.len() as u64)?;
+        self.ensure_path_valid()
     }
 
     pub fn available_restore_points(source: &Path) -> AppResult<Vec<RestorePoint>> {
@@ -595,7 +676,11 @@ impl WorkPackage {
         manifest.id = Uuid::new_v4().to_string();
         manifest.database_state = Some(DatabaseState::Clean);
         fs::create_dir_all(library)?;
-        let folder = unique_folder_name(&manifest.name, &existing_folder_names(library)?);
+        let mut existing = existing_folder_names(library)?;
+        if let Some(name) = source.file_name() {
+            existing.push(name.to_string_lossy().into_owned());
+        }
+        let folder = unique_folder_name(&manifest.name, &existing);
         let dest = library.join(folder);
         copy_restore_package(&point.path, &dest, &manifest)?;
         Self::open(&dest)
@@ -735,6 +820,7 @@ impl WorkPackage {
     }
 
     pub fn export_archive(&self) -> AppResult<Vec<u8>> {
+        self.ensure_path_valid()?;
         use std::io::{Cursor, Write};
         use zip::write::SimpleFileOptions;
 
@@ -896,6 +982,7 @@ impl WorkPackage {
     }
 
     pub fn put_work_map(&self, file_name: &str, bytes: &[u8]) -> AppResult<WorkMapDto> {
+        self.ensure_path_valid()?;
         let (asset_name, mime_type) = map_kind_from_file_name(file_name)?;
         self.remove_map_assets()?;
         let dest = self.path.join("assets").join(asset_name);
@@ -913,6 +1000,7 @@ impl WorkPackage {
     }
 
     pub fn clear_work_map(&self) -> AppResult<()> {
+        self.ensure_path_valid()?;
         self.remove_map_assets()?;
         self.conn.execute("DELETE FROM work_map", [])?;
         self.conn
@@ -921,6 +1009,7 @@ impl WorkPackage {
     }
 
     pub fn load_work_map(&self) -> AppResult<Option<WorkMapDto>> {
+        self.ensure_path_valid()?;
         let row: Option<(String, String)> = self
             .conn
             .query_row(
@@ -1065,6 +1154,40 @@ fn reject_unreadable_package(path: &Path, database_state: Option<DatabaseState>)
         return Err(corrupt_package());
     }
     Ok(())
+}
+
+fn identity_handle(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(7).custom_flags(0x02000000); // directory handle; allow external moves
+    }
+    options.open(path)
+}
+
+#[cfg(windows)]
+fn file_identity(file: &File) -> std::io::Result<[u64; 3]> {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandleEx(handle: *mut std::ffi::c_void, class: i32,
+            info: *mut std::ffi::c_void, size: u32) -> i32;
+    }
+    // FILE_ID_INFO: 64-bit volume serial + 128-bit file id (Windows 8+).
+    let mut identity = [0u64; 3];
+    let ok = unsafe { GetFileInformationByHandleEx(file.as_raw_handle(), 18,
+        identity.as_mut_ptr().cast(), std::mem::size_of_val(&identity) as u32) };
+    if ok == 0 { return Err(std::io::Error::last_os_error()); }
+    Ok(identity)
+}
+
+#[cfg(unix)]
+fn file_identity(file: &File) -> std::io::Result<[u64; 3]> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok([metadata.dev(), metadata.ino(), 0])
 }
 
 pub fn read_manifest(path: &Path) -> AppResult<WorkManifest> {
@@ -1262,6 +1385,172 @@ mod tests {
         assert_eq!(opened.session.scroll_top, 12.0);
         let text = extract_plain_text(&opened.chapter.unwrap().body);
         assert!(text.contains("还能看见"));
+    }
+
+    #[test]
+    fn moved_open_package_rejects_save_and_drop_does_not_recreate_source() {
+        let dir = tempdir().unwrap();
+        let backing = tempdir().unwrap();
+        let created = WorkPackage::create(backing.path(), "移走原稿").unwrap();
+        let moved = created.path.clone();
+        drop(created);
+        let source = dir.path().join("原稿入口");
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd.exe").args(["/C", "mklink", "/J"])
+                .arg(&source).arg(&moved).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&moved, &source).unwrap();
+        let mut work = WorkPackage::open(&source).unwrap();
+        let chapter = work.opened().unwrap().chapter.unwrap();
+        #[cfg(windows)]
+        fs::remove_dir(&source).unwrap(); // Remove only the junction, not its target.
+        #[cfg(unix)]
+        fs::remove_file(&source).unwrap();
+        let result = work.save_chapter(&SaveChapterPayload {
+            id: chapter.id, title: "未保存的新稿".into(), body: chapter.body,
+            cursor_from: 1, cursor_to: 1, scroll_top: 0.0,
+        });
+        assert!(result.is_err(), "orphaned SQLite writes must never report success");
+        assert!(work.rename_work("不能写回").is_err());
+        drop(work);
+        assert!(!source.exists());
+        assert_eq!(WorkPackage::open(&moved).unwrap().opened().unwrap().chapter.unwrap().title, "第一章");
+    }
+
+    #[test]
+    fn recovery_as_new_carries_draft_even_when_chapter_is_newer_than_point() {
+        let dir = tempdir().unwrap();
+        let original = WorkPackage::create(dir.path(), "恢复草稿").unwrap();
+        let point = original.create_restore_point(RestoreKind::Manual).unwrap();
+        let (_, chapter) = original.create_chapter(&CreateChapterOptions {
+            after_chapter_id: None, selected_volume_id: None,
+        }).unwrap();
+        let draft = SaveChapterPayload { id: chapter.id, title: "尚未落盘".into(),
+            body: serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"不能丢的字"}]}]}),
+            cursor_from: 3, cursor_to: 3, scroll_top: 12.0 };
+        let restored = WorkPackage::restore_as_new(dir.path(), &original.path, &point.folder_name).unwrap();
+        restored.save_recovered_chapter(&draft).unwrap();
+        let path = restored.path.clone();
+        drop(restored);
+        let reopened = WorkPackage::open(&path).unwrap();
+        let saved = reopened.opened().unwrap().chapter.unwrap();
+        assert_eq!(saved.title, "尚未落盘");
+        assert_eq!(saved.body, draft.body);
+        assert_eq!(saved.cursor_from, 3);
+        assert_eq!(reopened.outline().unwrap().chapters.len(), 2);
+        assert_ne!(reopened.manifest.id, original.manifest.id);
+        assert_eq!(original.load_chapter(&draft.id).unwrap().title, "");
+    }
+
+    #[cfg(windows)]
+    fn junction(source: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd.exe").args(["/C", "mklink", "/J"])
+            .arg(source).arg(target).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn same_path_replacement_with_same_manifest_id_is_untouched_by_save_and_drop() {
+        let dir = tempdir().unwrap();
+        let backing = tempdir().unwrap();
+        let original = WorkPackage::create(backing.path(), "原作").unwrap();
+        let original_path = original.path.clone();
+        let original_id = original.manifest.id.clone();
+        drop(original);
+        let source = dir.path().join("原作");
+        junction(&source, &original_path);
+        let mut work = WorkPackage::open(&source).unwrap();
+        let chapter = work.opened().unwrap().chapter.unwrap();
+        let points = work.list_restore_points().unwrap();
+        let replacement = WorkPackage::create(backing.path(), "无关替代作品").unwrap();
+        let replacement_path = replacement.path.clone();
+        drop(replacement);
+        let mut manifest = read_manifest(&replacement_path).unwrap();
+        manifest.id = original_id;
+        write_manifest(&replacement_path, &manifest).unwrap();
+        fs::remove_dir(&source).unwrap();
+        junction(&source, &replacement_path);
+        let before = snapshot_tree(&replacement_path);
+        let draft = SaveChapterPayload { id: chapter.id, title: "未保存草稿".into(), body: chapter.body,
+            cursor_from: 1, cursor_to: 1, scroll_top: 0.0 };
+        assert!(work.save_chapter(&draft).unwrap_err().to_string().contains("路径已失效"));
+        assert!(work.rename_work("不能覆盖").is_err());
+        assert!(work.create_restore_point(RestoreKind::Manual).is_err());
+        assert!(work.create_character().is_err());
+        let restored = WorkPackage::restore_as_new(dir.path(), &source, &points[0].folder_name).unwrap();
+        restored.save_recovered_chapter(&draft).unwrap();
+        assert_eq!(restored.opened().unwrap().chapter.unwrap().title, "未保存草稿");
+        assert_ne!(restored.path, source);
+        drop(work);
+        assert_eq!(snapshot_tree(&replacement_path), before, "including manifest, database and sidecars");
+        assert_eq!(WorkPackage::open(&original_path).unwrap().opened().unwrap().chapter.unwrap().title, "第一章");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn missing_manifest_does_not_get_recreated_on_drop() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "删除入口").unwrap();
+        let path = work.path.clone();
+        let point = work.list_restore_points().unwrap().remove(0);
+        fs::remove_file(path.join("work.json")).unwrap();
+        assert!(work.opened().is_err());
+        assert!(work.create_restore_point(RestoreKind::Manual).is_err());
+        drop(work);
+        assert!(!path.join("work.json").exists());
+        let restored = WorkPackage::restore_as_new(dir.path(), &path, &point.folder_name).unwrap();
+        assert_ne!(restored.path, path);
+        assert_eq!(restored.opened().unwrap().chapter.unwrap().title, "第一章");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn database_target_replaced_inside_same_directory_rejects_orphaned_save() {
+        let dir = tempdir().unwrap();
+        let original = WorkPackage::create(dir.path(), "数据库入口").unwrap();
+        let path = original.path.clone();
+        drop(original);
+        let database = path.join("work.sqlite");
+        let backing = dir.path().join("original.sqlite");
+        fs::rename(&database, &backing).unwrap();
+        std::os::unix::fs::symlink(&backing, &database).unwrap();
+        let work = WorkPackage::open(&path).unwrap();
+        let chapter = work.opened().unwrap().chapter.unwrap();
+        let replacement = WorkPackage::create(dir.path(), "替代数据库").unwrap();
+        let replacement_path = replacement.path.clone();
+        drop(replacement);
+        fs::remove_file(&database).unwrap();
+        std::os::unix::fs::symlink(replacement_path.join("work.sqlite"), &database).unwrap();
+        let before = snapshot_tree(&replacement_path);
+        let payload = SaveChapterPayload { id: chapter.id, title: "不能假报保存".into(), body: chapter.body,
+            cursor_from: 1, cursor_to: 1, scroll_top: 0.0 };
+        assert!(work.save_chapter(&payload).unwrap_err().to_string().contains("路径已失效"));
+        let manifest_before = fs::read(path.join("work.json")).unwrap();
+        drop(work);
+        assert_eq!(fs::read(path.join("work.json")).unwrap(), manifest_before);
+        assert_eq!(snapshot_tree(&replacement_path), before);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_denies_replacing_open_database_file_without_losing_saved_content() {
+        let dir = tempdir().unwrap();
+        let work = WorkPackage::create(dir.path(), "文件共享保护").unwrap();
+        let chapter = work.opened().unwrap().chapter.unwrap();
+        let database = work.path.join("work.sqlite");
+        let error = fs::rename(&database, dir.path().join("removed.sqlite")).unwrap_err();
+        assert!(matches!(error.raw_os_error(), Some(5 | 32)), "real Windows sharing denial: {error}");
+        let error = fs::remove_file(&database).unwrap_err();
+        assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+        work.save_chapter(&SaveChapterPayload { id: chapter.id.clone(), title: "仍然写入原库".into(),
+            body: chapter.body, cursor_from: 1, cursor_to: 1, scroll_top: 0.0 }).unwrap();
+        let path = work.path.clone();
+        drop(work);
+        assert_eq!(WorkPackage::open(&path).unwrap().load_chapter(&chapter.id).unwrap().title, "仍然写入原库");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createMemoryApi } from "../api/memory";
+import { createMemoryApi, createMemoryApiPair } from "../api/memory";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { RestorePointDialog } from "./RestorePointDialog";
@@ -84,6 +84,33 @@ describe("恢复点对话框", () => {
 });
 
 describe("从恢复点恢复 / AppApi", () => {
+  it("已打开作品从作品库消失后仍能列恢复点并保全失败草稿", async () => {
+    const [api, external] = createMemoryApiPair();
+    const original = await api.createWork("失效原稿");
+    const point = await api.createRestorePoint();
+    await external.deleteWork(original.work.id);
+    const draft = { ...original.chapter!, title: "待保全草稿" };
+    await expect(api.saveChapter(draft)).rejects.toThrow("路径已失效");
+    expect(await api.listRestorePoints(original.work.id)).toContainEqual(point);
+    const restored = await api.restoreFromPoint(original.work.id, point.folderName, false, draft);
+    expect(restored.path).not.toBe(original.work.path);
+    expect((await api.openWork(restored.id)).chapter!.title).toBe(draft.title);
+  });
+  it("恢复为新作品携带未保存的新章节且原稿不变", async () => {
+    const api = createMemoryApi();
+    const original = await api.createWork("草稿保全");
+    const point = await api.createRestorePoint();
+    const added = await api.createChapter({});
+    const draft = { ...added.chapter, title: "未保存标题", body: { type: "doc", content: [
+      { type: "paragraph", content: [{ type: "text", text: "未保存正文" }] },
+    ] } };
+    const restored = await api.restoreFromPoint(original.work.id, point.folderName, false, draft);
+    expect((await api.loadChapter(added.chapter.id)).title).not.toBe(draft.title);
+    const opened = await api.openWork(restored.id);
+    expect(opened.chapter?.title).toBe(draft.title);
+    expect(opened.chapter?.body).toEqual(draft.body);
+    expect(opened.outline.chapters).toHaveLength(2);
+  });
   afterEach(() => vi.useRealTimers());
   it("替换保留身份并先保全新稿，写作时拒绝替换", async () => {
     const api = createMemoryApi();

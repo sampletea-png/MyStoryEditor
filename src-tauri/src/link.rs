@@ -59,6 +59,7 @@ const LINKABLE: [&str; 5] = ["chapter", "character", "location", "event", "setti
 
 impl WorkPackage {
     pub fn search_work(&self, query: &str) -> AppResult<SearchResultsDto> {
+        self.ensure_path_valid()?;
         let needle = query.trim();
         if needle.is_empty() {
             return Ok(SearchResultsDto {
@@ -73,6 +74,7 @@ impl WorkPackage {
     }
 
     pub fn list_associations(&self, kind: &str, id: &str) -> AppResult<Vec<AssociationDto>> {
+        self.ensure_path_valid()?;
         // Existing rowids record insertion order; UUIDs and location order do not.
         // Storyline routes use the earliest associated location, including after reopen.
         let mut stmt = self.conn.prepare(
@@ -106,6 +108,7 @@ impl WorkPackage {
     }
 
     pub fn create_association(&self, payload: &CreateAssociationPayload) -> AppResult<AssociationDto> {
+        self.ensure_path_valid()?;
         let left = validate_ref(&payload.left)?;
         let right = validate_ref(&payload.right)?;
         if left.kind == right.kind && left.id == right.id {
@@ -149,6 +152,7 @@ impl WorkPackage {
     }
 
     pub fn update_association_note(&self, id: &str, note: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         let changed = self.conn.execute(
             "UPDATE associations SET note = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![note, id],
@@ -160,6 +164,7 @@ impl WorkPackage {
     }
 
     pub fn delete_association(&self, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         let changed = self.conn.execute(
             "UPDATE associations SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![now_ts(), id],
@@ -171,6 +176,7 @@ impl WorkPackage {
     }
 
     pub fn drop_associations_for(&self, kind: &str, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         self.conn.execute(
             "DELETE FROM associations WHERE (left_kind = ?1 AND left_id = ?2)
                  OR (right_kind = ?1 AND right_id = ?2)",

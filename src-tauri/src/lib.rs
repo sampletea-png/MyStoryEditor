@@ -57,7 +57,10 @@ fn with_open<T>(state: &AppState, f: impl FnOnce(&mut WorkPackage) -> AppResult<
     let work = guard
         .as_mut()
         .ok_or_else(|| AppError::Message("没有打开的作品".into()))?;
-    f(work)
+    work.ensure_path_valid()?;
+    let result = f(work)?;
+    work.ensure_path_valid()?;
+    Ok(result)
 }
 
 fn library_path(state: &AppState) -> AppResult<std::path::PathBuf> {
@@ -166,13 +169,12 @@ fn open_work(state: State<AppState>, id: String) -> Result<OpenedWorkDto, String
     let library = library_path(&state)?;
     let path = find_work_dir(&library, &id, false).map_err(String::from)?;
     {
-        let mut open = state.open.lock().expect("open work lock");
+        let open = state.open.lock().expect("open work lock");
         if let Some(current) = open.as_ref() {
             if current.path == path {
                 return current.opened().map_err(String::from);
             }
         }
-        *open = None;
     }
     let package = WorkPackage::open(&path).map_err(String::from)?;
     let opened = package.opened().map_err(String::from)?;
@@ -198,19 +200,28 @@ fn create_restore_point(state: State<AppState>) -> Result<RestorePoint, String> 
 #[tauri::command]
 fn list_restore_points(state: State<AppState>, work_id: Option<String>) -> Result<Vec<RestorePoint>, String> {
     if let Some(id) = work_id {
+        let open = state.open.lock().expect("open work lock");
+        if let Some(work) = open.as_ref().filter(|work| work.manifest.id == id) {
+            return work.list_restore_points().map_err(String::from);
+        }
         let path = find_work_dir(&library_path(&state)?, &id, false).map_err(String::from)?;
         return WorkPackage::available_restore_points(&path).map_err(String::from);
     }
-    with_open(&state, |work| work.list_restore_points()).map_err(String::from)
+    let open = state.open.lock().expect("open work lock");
+    open.as_ref().ok_or("没有打开的作品")?.list_restore_points().map_err(String::from)
 }
 
 #[tauri::command]
 fn restore_from_point(
     state: State<AppState>, work_id: String, folder_name: String, replace_confirmed: bool,
+    pending_draft: Option<SaveChapterPayload>,
 ) -> Result<WorkSummary, String> {
     let library = library_path(&state)?;
-    let path = find_work_dir(&library, &work_id, false).map_err(String::from)?;
     let open = state.open.lock().expect("open work lock");
+    let path = match open.as_ref().filter(|work| work.manifest.id == work_id) {
+        Some(work) => work.path.clone(),
+        None => find_work_dir(&library, &work_id, false).map_err(String::from)?,
+    };
     if replace_confirmed {
         if open.is_some() {
             return Err("请先保存并回作品库，再替换当前作品".into());
@@ -218,6 +229,9 @@ fn restore_from_point(
         WorkPackage::replace_from_point(&path, &folder_name, true).map_err(String::from)
     } else {
         let restored = WorkPackage::restore_as_new(&library, &path, &folder_name).map_err(String::from)?;
+        if let Some(draft) = pending_draft {
+            restored.save_recovered_chapter(&draft).map_err(String::from)?;
+        }
         Ok(restored.summary(false))
     }
 }

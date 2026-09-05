@@ -7,9 +7,10 @@ type Props = {
   work: WorkSummary;
   onClose: () => void;
   onRestored: (work: WorkSummary) => void | Promise<void>;
+  pendingDraft?: Parameters<AppApi["saveChapter"]>[0];
 };
 
-export function RestorePointDialog({ api, work, onClose, onRestored }: Props) {
+export function RestorePointDialog({ api, work, onClose, onRestored, pendingDraft }: Props) {
   const [points, setPoints] = useState<RestorePoint[]>([]);
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,9 +40,9 @@ export function RestorePointDialog({ api, work, onClose, onRestored }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const restored = await api.restoreFromPoint(work.id, selected, replaceConfirmed);
-      setDone(true);
+      const restored = await api.restoreFromPoint(work.id, selected, replaceConfirmed, pendingDraft);
       await onRestored(restored);
+      setDone(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -69,6 +70,7 @@ export function RestorePointDialog({ api, work, onClose, onRestored }: Props) {
         }}>
         <h2 id={headingId}>从恢复点恢复 · {work.name}</h2>
         {work.problem ? <p role="alert">{work.problem}。可从最近可用恢复点恢复为新作品；损坏包和原恢复点会保留。</p> : null}
+        {pendingDraft ? <p>未保存的当前章节将写入新作品；若恢复点中没有该章，则追加为新章。取消或失败不会丢弃当前草稿。</p> : null}
         {error ? <p role="alert" className="restore-point-error">{error}</p> : null}
         {loading ? <p role="status">正在检查可用恢复点…</p> : points.length === 0 ? <p>没有可用恢复点。原作品数据包未改动。</p> : confirming ? (
           <>

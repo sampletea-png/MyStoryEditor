@@ -399,6 +399,7 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
   const works = shared.works;
   const recycled = shared.recycled;
   let openId: string | null = null;
+  let openWork: StoredWork | null = null;
   let failNext = false;
 
   const requireOpen = () => {
@@ -406,8 +407,8 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       throw new Error("没有打开的作品");
     }
     const work = works.get(openId);
-    if (!work) {
-      throw new Error("没有打开的作品");
+    if (!work || work !== openWork) {
+      throw new Error("作品路径已失效或被替换；未保存内容仍保留");
     }
     return work;
   };
@@ -572,6 +573,7 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       releaseLock();
       acquireLock(work.summary.path);
       openId = work.summary.id;
+      openWork = work;
       ensureDailyRestorePoint(work);
       return opened(work);
     },
@@ -617,11 +619,13 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       }
       acquireLock(work.summary.path);
       openId = id;
+      openWork = work;
       ensureDailyRestorePoint(work);
       return opened(work);
     },
     async closeWork() {
       if (openId) {
+        requireOpen();
         const work = works.get(openId);
         if (work) {
           addRestorePoint(work, "auto");
@@ -629,6 +633,7 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       }
       releaseLock();
       openId = null;
+      openWork = null;
     },
     async createVolume(title) {
       const work = requireOpen();
@@ -1269,6 +1274,7 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       const work = workFromSnapshot(snapshot, folderName, shared.libraryPath ?? defaultLibraryPath);
       works.set(work.summary.id, work);
       openId = work.summary.id;
+      openWork = work;
       return opened(work);
     },
     async getWorkMap() {
@@ -1295,12 +1301,12 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
       return addRestorePoint(requireOpen(), "manual");
     },
     async listRestorePoints(workId) {
-      const work = workId ? works.get(workId) : requireOpen();
+      const work = !workId || workId === openId ? openWork : works.get(workId);
       if (!work) throw new Error("找不到这部作品");
       return work.restorePoints.map(restorePointSummary);
     },
-    async restoreFromPoint(workId, folderName, replaceConfirmed = false) {
-      const source = works.get(workId);
+    async restoreFromPoint(workId, folderName, replaceConfirmed = false, pendingDraft) {
+      const source = workId === openId ? openWork : works.get(workId);
       const point = source?.restorePoints.find(item => item.folderName === folderName);
       if (!source || !point) throw new Error("找不到这个恢复点");
       if (replaceConfirmed) {
@@ -1320,9 +1326,22 @@ function bindMemoryApi(shared: MemoryShared, options: MemoryApiOptions = {}): Ap
         }
       }
       const folder = uniqueFolderName(point.snapshot.name,
-        new Set([...works.values()].map(work => work.summary.folderName.toLowerCase())));
+        new Set([...works.values()].map(work => work.summary.folderName.toLowerCase()).concat(source.summary.folderName.toLowerCase())));
       const work = workFromSnapshot(point.snapshot, folder, shared.libraryPath ?? defaultLibraryPath);
       work.workMap = structuredClone(point.workMap);
+      if (pendingDraft) {
+        let chapter = work.chapters.get(pendingDraft.id);
+        if (!chapter || chapter.deletedAt !== null) {
+          chapter = emptyChapter("", work.outline.volumes[work.outline.volumes.length - 1]?.id ?? null, work.outline.chapters.length);
+          work.chapters.set(chapter.id, chapter);
+          work.outline.chapters.push({ id: chapter.id, title: "", status: chapter.status,
+            volumeId: chapter.volumeId, sortOrder: chapter.sortOrder });
+        }
+        Object.assign(chapter, cloneItem(pendingDraft), { id: chapter.id, wordCount: countDocumentWords(pendingDraft.body) });
+        work.outline.chapters.find(item => item.id === chapter.id)!.title = chapter.title;
+        work.session = { chapterId: chapter.id, cursorFrom: chapter.cursorFrom,
+          cursorTo: chapter.cursorTo, scrollTop: chapter.scrollTop };
+      }
       works.set(work.summary.id, work);
       return { ...work.summary };
     },

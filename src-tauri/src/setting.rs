@@ -105,6 +105,7 @@ pub struct RestoreResultDto {
 
 impl WorkPackage {
     pub fn catalog(&self) -> AppResult<SettingCatalogDto> {
+        self.ensure_path_valid()?;
         Ok(SettingCatalogDto {
             categories: self.list_categories()?,
             characters: self.list_characters()?,
@@ -116,6 +117,7 @@ impl WorkPackage {
     }
 
     pub fn create_character(&self) -> AppResult<CharacterDto> {
+        self.ensure_path_valid()?;
         let id = Uuid::new_v4().to_string();
         let sort = next_sort(&self.conn, "characters")?;
         self.conn.execute(
@@ -127,6 +129,7 @@ impl WorkPackage {
     }
 
     pub fn save_character(&self, payload: &CharacterDto) -> AppResult<()> {
+        self.ensure_path_valid()?;
         let aliases = serde_json::to_string(&payload.aliases)?;
         let changed = self.conn.execute(
             "UPDATE characters
@@ -149,10 +152,12 @@ impl WorkPackage {
     }
 
     pub fn delete_character(&self, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         soft_delete(&self.conn, "characters", id)
     }
 
     pub fn create_location(&self, parent_id: Option<String>) -> AppResult<LocationDto> {
+        self.ensure_path_valid()?;
         if let Some(parent) = parent_id.as_deref() {
             if !self.live_location_exists(parent)? {
                 return Err(AppError::Message("找不到上级地点".into()));
@@ -169,6 +174,7 @@ impl WorkPackage {
     }
 
     pub fn save_location(&self, payload: &LocationDto) -> AppResult<SettingCatalogDto> {
+        self.ensure_path_valid()?;
         if self.would_create_location_cycle(&payload.id, payload.parent_id.as_deref())? {
             return Err(AppError::Message("地点不能形成环".into()));
         }
@@ -192,6 +198,7 @@ impl WorkPackage {
     }
 
     pub fn delete_location(&self, id: &str) -> AppResult<SettingCatalogDto> {
+        self.ensure_path_valid()?;
         let parent: Option<String> = self.conn.query_row(
             "SELECT parent_id FROM locations WHERE id = ?1 AND deleted_at IS NULL",
             [id],
@@ -206,6 +213,7 @@ impl WorkPackage {
     }
 
     pub fn create_event(&self) -> AppResult<EventDto> {
+        self.ensure_path_valid()?;
         let id = Uuid::new_v4().to_string();
         let sort = next_sort(&self.conn, "events")?;
         self.conn.execute(
@@ -217,6 +225,7 @@ impl WorkPackage {
     }
 
     pub fn save_event(&self, payload: &EventDto) -> AppResult<()> {
+        self.ensure_path_valid()?;
         let changed = self.conn.execute(
             "UPDATE events SET name = ?1, summary = ?2, description_json = ?3, story_time = ?4
              WHERE id = ?5 AND deleted_at IS NULL",
@@ -235,10 +244,12 @@ impl WorkPackage {
     }
 
     pub fn delete_event(&self, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         soft_delete(&self.conn, "events", id)
     }
 
     pub fn create_storyline(&self) -> AppResult<StorylineDto> {
+        self.ensure_path_valid()?;
         let id = Uuid::new_v4().to_string();
         let sort = next_sort(&self.conn, "storylines")?;
         self.conn.execute(
@@ -249,6 +260,7 @@ impl WorkPackage {
     }
 
     pub fn save_storyline(&self, id: &str, name: &str, summary: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         let changed = self.conn.execute(
             "UPDATE storylines SET name = ?1, summary = ?2 WHERE id = ?3 AND deleted_at IS NULL",
             params![name, summary, id],
@@ -260,10 +272,12 @@ impl WorkPackage {
     }
 
     pub fn delete_storyline(&self, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         soft_delete(&self.conn, "storylines", id)
     }
 
     pub fn add_event_to_storyline(&self, storyline_id: &str, event_id: &str) -> AppResult<StorylineDto> {
+        self.ensure_path_valid()?;
         self.require_live("storylines", storyline_id, "找不到这条故事线")?;
         self.require_live("events", event_id, "找不到这个事件")?;
         let exists: i64 = self.conn.query_row(
@@ -290,6 +304,7 @@ impl WorkPackage {
         storyline_id: &str,
         event_id: &str,
     ) -> AppResult<StorylineDto> {
+        self.ensure_path_valid()?;
         self.conn.execute(
             "DELETE FROM storyline_events WHERE storyline_id = ?1 AND event_id = ?2",
             params![storyline_id, event_id],
@@ -303,6 +318,7 @@ impl WorkPackage {
         event_id: &str,
         direction: &str,
     ) -> AppResult<StorylineDto> {
+        self.ensure_path_valid()?;
         let current: i64 = self.conn.query_row(
             "SELECT sort_order FROM storyline_events WHERE storyline_id = ?1 AND event_id = ?2",
             params![storyline_id, event_id],
@@ -338,6 +354,7 @@ impl WorkPackage {
     }
 
     pub fn create_setting_entry(&self, category_id: Option<String>) -> AppResult<SettingEntryDto> {
+        self.ensure_path_valid()?;
         let category = category_id.unwrap_or_else(|| UNCATEGORIZED_ID.to_string());
         self.require_category(&category)?;
         let id = Uuid::new_v4().to_string();
@@ -351,6 +368,7 @@ impl WorkPackage {
     }
 
     pub fn save_setting_entry(&self, payload: &SettingEntryDto) -> AppResult<()> {
+        self.ensure_path_valid()?;
         self.require_category(&payload.category_id)?;
         let changed = self.conn.execute(
             "UPDATE setting_entries SET name = ?1, category_id = ?2, summary = ?3, body_json = ?4
@@ -370,10 +388,12 @@ impl WorkPackage {
     }
 
     pub fn delete_setting_entry(&self, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         soft_delete(&self.conn, "setting_entries", id)
     }
 
     pub fn create_category(&self, name: &str) -> AppResult<SettingCategoryDto> {
+        self.ensure_path_valid()?;
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(AppError::Message("分类名不能为空".into()));
@@ -400,6 +420,7 @@ impl WorkPackage {
     }
 
     pub fn rename_category(&self, id: &str, name: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         self.forbid_uncategorized(id, "不能改名「未分类」")?;
         let trimmed = name.trim();
         if trimmed.is_empty() {
@@ -419,6 +440,7 @@ impl WorkPackage {
     }
 
     pub fn delete_category(&self, id: &str) -> AppResult<SettingCatalogDto> {
+        self.ensure_path_valid()?;
         self.forbid_uncategorized(id, "无法删除「未分类」")?;
         self.conn.execute(
             "UPDATE setting_entries SET category_id = ?1 WHERE category_id = ?2",
@@ -435,6 +457,7 @@ impl WorkPackage {
     }
 
     pub fn list_recycle(&self) -> AppResult<Vec<RecycleItemDto>> {
+        self.ensure_path_valid()?;
         let mut items = Vec::new();
         push_recycle(
             &self.conn,
@@ -483,6 +506,7 @@ impl WorkPackage {
     }
 
     pub fn restore_recycle(&self, kind: &str, id: &str) -> AppResult<RestoreResultDto> {
+        self.ensure_path_valid()?;
         match kind {
             "volume" => self.restore_volume(id)?,
             "chapter" => self.restore_chapter(id)?,
@@ -500,6 +524,7 @@ impl WorkPackage {
     }
 
     pub fn permanently_delete_recycle(&self, kind: &str, id: &str) -> AppResult<()> {
+        self.ensure_path_valid()?;
         match kind {
             "volume" => {
                 let mut stmt = self.conn.prepare(

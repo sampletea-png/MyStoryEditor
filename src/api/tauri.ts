@@ -131,8 +131,8 @@ export function createTauriApi(): AppApi {
     clearWorkMap: () => invoke("clear_work_map"),
     createRestorePoint: () => invoke("create_restore_point"),
     listRestorePoints: (workId) => invoke("list_restore_points", { workId }),
-    restoreFromPoint: (workId, folderName, replaceConfirmed = false) =>
-      invoke("restore_from_point", { workId, folderName, replaceConfirmed }),
+    restoreFromPoint: (workId, folderName, replaceConfirmed = false, pendingDraft) =>
+      invoke("restore_from_point", { workId, folderName, replaceConfirmed, pendingDraft }),
     async exportBody(request) {
       const source = await invoke<BodyExportSource>("body_export_source");
       return runBodyExport(
